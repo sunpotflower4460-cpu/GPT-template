@@ -45,7 +45,18 @@ export function run({ root, base }) {
     return { ok: true, messages: ['PHASE.md は base 時点で存在しないため、新規作成として扱いスキップします'] }
   }
 
-  const afterValue = git(['show', 'HEAD:PHASE.md'], root).split('\n')[0].trim()
+  // base 時点には存在した PHASE.md が HEAD では削除・移動されている可能性がある
+  // （diffに名前が出るのは変更・削除どちらでも同じ）。その場合 `git show HEAD:PHASE.md`
+  // は失敗するため、他の git show 呼び出しと同様に握りつぶす。
+  let afterValue
+  try {
+    afterValue = git(['show', 'HEAD:PHASE.md'], root).split('\n')[0].trim()
+  } catch {
+    return {
+      ok: false,
+      messages: [`PHASE.md が ${resolvedBase}..HEAD の間で削除または移動されています。意図した変更か確認してください`],
+    }
+  }
   if (beforeValue === afterValue) {
     return { ok: true, messages: [`PHASE.md の値（${afterValue}）は変わっていません`] }
   }

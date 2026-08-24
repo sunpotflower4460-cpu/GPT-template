@@ -30,8 +30,20 @@ export const CHECKS = [
   { name: 'craft-format', run: craftFormat },
 ]
 
+// 個々のチェックが例外を投げると、他の全チェックの結果ごと `npm run guard` の
+// プロセス全体が生のスタックトレースで落ちてしまう（実際に phase-not-bundled で
+// 発生した：PHASE.md がdiff範囲内で削除されているとき、想定していない
+// `git show HEAD:PHASE.md` の失敗がそのまま伝播していた）。
+// 各チェックの内部で個別に握り潰すのではなく、ここで一括して受け止め、
+// 1件の想定外の失敗が他のチェックの実行や結果表示を妨げないようにする。
 export function runAll(opts) {
-  return CHECKS.map(({ name, run }) => ({ name, ...run(opts) }))
+  return CHECKS.map(({ name, run }) => {
+    try {
+      return { name, ...run(opts) }
+    } catch (e) {
+      return { name, ok: false, messages: [`予期しないエラーで検査を完了できませんでした: ${e.message}`] }
+    }
+  })
 }
 
 function parseArgs(argv) {

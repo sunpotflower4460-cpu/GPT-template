@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { mkdtempSync, mkdirSync, cpSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, cpSync, writeFileSync, readFileSync, rmSync, unlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -313,6 +313,43 @@ const cases = [
       // 残っていれば承認1件とみなされ、1件<=1件で誤ってPASSしてしまう。
       const result = checkResult(root, 'entrance-count')
       return result.ok === false && result.messages[0].includes('承認済みかつ入口ありの機能: 0件')
+    },
+  },
+  {
+    name: '回帰防止: PHASE.md がbase..HEADで削除されていてもphase-not-bundledは例外を投げない',
+    expect: () => {
+      const root = setupTempProject(join(FIXTURES, 'pass'))
+      // setupTempProject は git init 時にブランチ名を指定していない
+      // （環境の init.defaultBranch 設定に依存する）ため、ブランチ名ではなく
+      // 直前コミットのSHAをbaseとして明示し、環境差異の影響を受けないようにする。
+      const initialSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim()
+      unlinkSync(join(root, 'PHASE.md'))
+      mkdirSync(join(root, 'src/screens/second'), { recursive: true })
+      writeFileSync(join(root, 'src/screens/second/index.tsx'), '// @feature F-001\nexport default function X() { return null }\n')
+      git(['add', '-A'], root)
+      git(['commit', '-q', '-m', 'delete PHASE.md alongside impl'], root)
+      let result
+      try {
+        result = checkResult(root, 'phase-not-bundled', initialSha)
+      } catch {
+        return false // 例外を投げた時点でこのテストは失敗
+      }
+      return result.ok === false
+    },
+  },
+  {
+    name: '回帰防止: runAllはいずれかのチェックが例外を投げても他の結果を道連れにしない',
+    expect: () => {
+      // 存在しないrootを渡すことで、少なくとも一部のチェックが想定外の状態に
+      // 直面する状況を作る。ここでの主張は「プロセスがクラッシュせず、
+      // 9件全てについて何らかの結果が返る」ことであり、個々の ok の値は問わない。
+      let results
+      try {
+        results = runAll({ root: '/nonexistent-path-for-selftest-xyz' })
+      } catch {
+        return false
+      }
+      return results.length === 9 && results.every((r) => typeof r.ok === 'boolean')
     },
   },
 ]
