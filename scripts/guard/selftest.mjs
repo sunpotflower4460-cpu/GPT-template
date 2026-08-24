@@ -1,10 +1,11 @@
 #!/usr/bin/env node
-import { mkdtempSync, cpSync, writeFileSync, readFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, cpSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { execFileSync } from 'node:child_process'
 import { runAll } from './index.mjs'
+import { resolveDefaultBase } from './lib/git-base.mjs'
 
 // scripts/guard/ の各チェックが「検出すべき違反を実際に検出できるか」を
 // fixtures/ を使って検証するセルフテスト。
@@ -18,8 +19,14 @@ function git(args, cwd) {
   execFileSync('git', args, { cwd, stdio: 'ignore' })
 }
 
+// 各テストケースが作る一時gitリポジトリを記録し、実行後にまとめて削除する。
+// これを怠ると `npm run guard:selftest` を呼ぶたびに（CIも含めて）
+// OSの一時ディレクトリにgitリポジトリが積み上がり続ける。
+const tempDirs = []
+
 function setupTempProject(fixtureDir) {
   const tmp = mkdtempSync(join(tmpdir(), 'guard-selftest-'))
+  tempDirs.push(tmp)
   cpSync(fixtureDir, tmp, { recursive: true })
   git(['init', '-q'], tmp)
   git(['config', 'user.email', 'selftest@example.com'], tmp)
@@ -236,6 +243,78 @@ const cases = [
       return result.ok === false && flagsMissingHeading && flagsShortWhy
     },
   },
+  {
+    name: '回帰防止: resolveDefaultBase はデフォルトブランチに直接いてもHEAD自身に収束しない',
+    expect: () => {
+      // main に直接コミットした状態（guard.yml の push トリガー相当）で
+      // merge-base(main, HEAD) が HEAD 自身になり、diffが常に空になっていたバグ。
+      const root = setupTempProject(join(FIXTURES, 'pass'))
+      mkdirSync(join(root, 'src/screens/second'), { recursive: true })
+      writeFileSync(join(root, 'PHASE.md'), 'P4\n\nこのファイルはユーザーのみが更新する。\n')
+      writeFileSync(join(root, 'src/screens/second/index.tsx'), '// @feature F-001\nexport default function X() { return null }\n')
+      git(['add', '-A'], root)
+      git(['commit', '-q', '-m', 'bundle directly on main'], root)
+      const base = resolveDefaultBase(root)
+      if (base === 'HEAD' || base === execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim()) {
+        return false
+      }
+      return checkResult(root, 'phase-not-bundled').ok === false
+    },
+  },
+  {
+    name: '回帰防止: tokens-hardcoded は8桁アルファ付きhexも検出する',
+    expect: () => {
+      const root = setupTempProject(join(FIXTURES, 'pass'))
+      mkdirSync(join(root, 'src/screens/alpha'), { recursive: true })
+      writeFileSync(
+        join(root, 'src/screens/alpha/index.tsx'),
+        "// @feature F-001\nexport default function X() { return <div style={{ color: '#1a2b3c4d' }} /> }\n",
+      )
+      git(['add', '-A'], root)
+      git(['commit', '-q', '-m', 'add 8-digit hex'], root)
+      return checkResult(root, 'tokens-hardcoded').ok === false
+    },
+  },
+  {
+    name: '回帰防止: no-new-deps は不正なpackage.jsonを「依存0件」として黙殺しない',
+    expect: () => {
+      const root = setupTempProject(join(FIXTURES, 'pass'))
+      writeFileSync(join(root, 'package.json'), '{ "dependencies": { "left-pad": "1.0.0", } }')
+      const result = checkResult(root, 'no-new-deps', 'HEAD')
+      return result.ok === false && result.messages.some((m) => m.includes('不正なJSON'))
+    },
+  },
+  {
+    name: '回帰防止: guard.config.json が不正な場合、既定値へ黙って逃げない',
+    expect: () => {
+      const root = setupTempProject(join(FIXTURES, 'pass'))
+      writeFileSync(join(root, 'guard.config.json'), '{ sourceRoot: app }')
+      const result = checkResult(root, 'entrance-count')
+      return result.ok === false && result.messages.some((m) => m.includes('guard.config.json'))
+    },
+  },
+  {
+    name: '回帰防止: entrance-count の入口判定は部分一致（例:「有効化前」の「有」）に反応しない',
+    expect: () => {
+      const root = setupTempProject(join(FIXTURES, 'pass'))
+      writeFileSync(
+        join(root, 'docs/03-scope/FEATURES.md'),
+        [
+          '# FEATURES.md',
+          '',
+          '| ID | 機能名 | 状態 | 魂との関係 | 承認日 | 入口の有無 |',
+          '|---|---|---|---|---|---|',
+          '| F-001 | ログイン | 承認 | 中核 | 2026-01-01 | 有効化前のため未定 |',
+        ].join('\n'),
+      )
+      // pass fixture には既に src/screens/login/ という実際の入口が1件ある。
+      // 「有効化前のため未定」を正しく非承認として扱えば、承認された入口0件 <
+      // 実際の入口1件で FAIL になるはず。もし旧バグ（部分一致で「有」を拾う）が
+      // 残っていれば承認1件とみなされ、1件<=1件で誤ってPASSしてしまう。
+      const result = checkResult(root, 'entrance-count')
+      return result.ok === false && result.messages[0].includes('承認済みかつ入口ありの機能: 0件')
+    },
+  },
 ]
 
 let allPass = true
@@ -250,5 +329,13 @@ for (const c of cases) {
   console.log(`[${ok ? 'PASS' : 'FAIL'}] ${c.name}`)
   if (!ok) allPass = false
 }
+for (const dir of tempDirs) {
+  try {
+    rmSync(dir, { recursive: true, force: true })
+  } catch {
+    // 削除に失敗してもテスト結果には影響させない（OSの一時領域は最終的にクリーンされる）
+  }
+}
+
 console.log(allPass ? '\n✓ セルフテスト全て通過' : '\n✗ セルフテストに失敗があります')
 process.exit(allPass ? 0 : 1)

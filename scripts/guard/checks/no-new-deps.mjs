@@ -11,14 +11,18 @@ import { git, resolveDefaultBase } from '../lib/git-base.mjs'
 // デフォルトブランチとのマージベースを使う。依存追加だけの小さなコミットを
 // 挟んでおいて実装は別コミットにする、という分割で HEAD~1 比較はすり抜けられて
 // しまうため、同じブランチ（同じPR）内の全コミットをまとめて見る。
+// パース失敗を「依存0件」と区別せず返すための番兵オブジェクト。
+const PARSE_FAILED = Symbol('parse-failed')
+
 function depNames(pkgJsonText) {
   if (!pkgJsonText) return new Set()
+  let pkg
   try {
-    const pkg = JSON.parse(pkgJsonText)
-    return new Set([...Object.keys(pkg.dependencies ?? {}), ...Object.keys(pkg.devDependencies ?? {})])
+    pkg = JSON.parse(pkgJsonText)
   } catch {
-    return new Set()
+    return PARSE_FAILED
   }
+  return new Set([...Object.keys(pkg.dependencies ?? {}), ...Object.keys(pkg.devDependencies ?? {})])
 }
 
 export function run({ root, base }) {
@@ -50,9 +54,14 @@ export function run({ root, base }) {
   }
 
   const afterText = readFileSync(pkgPath, 'utf8')
-  const before = depNames(beforeText)
   const after = depNames(afterText)
-  const added = [...after].filter((name) => !before.has(name))
+  if (after === PARSE_FAILED) {
+    return { ok: false, messages: ['package.json が不正なJSONです。依存の追加有無を検証できません。修正してください'] }
+  }
+
+  const before = depNames(beforeText)
+  const beforeSet = before === PARSE_FAILED ? new Set() : before
+  const added = [...after].filter((name) => !beforeSet.has(name))
 
   if (added.length > 0) {
     return {

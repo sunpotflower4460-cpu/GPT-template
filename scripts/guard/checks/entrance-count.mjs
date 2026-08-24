@@ -56,11 +56,22 @@ export function run({ root }) {
   }
 
   const rows = readTable(featuresPath).filter((r) => r.ID?.trim())
-  const approvedWithEntrance = rows.filter(
-    (r) => r['状態']?.trim() === '承認' && /あり|有/.test(r['入口の有無'] ?? ''),
-  ).length
+  const approvedWithEntrance = rows.filter((r) => {
+    if (r['状態']?.trim() !== '承認') return false
+    // 部分一致だと「有効化前のため未定」のような否定的な文脈の中の
+    // 「有」まで拾ってしまう。列の値そのものが「あり」または「有」で
+    // あることを要求する（前後の空白は許容）。
+    const value = (r['入口の有無'] ?? '').trim()
+    return value === 'あり' || value === '有'
+  }).length
 
-  const actualEntrances = countEntranceUnits(root, loadConfig(root))
+  let config
+  try {
+    config = loadConfig(root)
+  } catch (e) {
+    return { ok: false, messages: [`guard.config.json の読み込みに失敗しました: ${e.message}`] }
+  }
+  const actualEntrances = countEntranceUnits(root, config)
   const ok = actualEntrances <= approvedWithEntrance
   const messages = [
     `承認済みかつ入口ありの機能: ${approvedWithEntrance}件 / 実際の入口: ${actualEntrances}件` +

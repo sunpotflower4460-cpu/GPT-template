@@ -20,7 +20,13 @@ export function run({ root }) {
   const allIds = new Set(rows.map((r) => r.ID.trim()))
   const approvedIds = new Set(rows.filter((r) => r['状態']?.trim() === '承認').map((r) => r.ID.trim()))
 
-  const sourceRoot = join(root, loadConfig(root).sourceRoot)
+  let config
+  try {
+    config = loadConfig(root)
+  } catch (e) {
+    return { ok: false, messages: [`guard.config.json の読み込みに失敗しました: ${e.message}`] }
+  }
+  const sourceRoot = join(root, config.sourceRoot)
   const files = existsSync(sourceRoot) ? walkFiles(sourceRoot, { extensions: SOURCE_EXTENSIONS }) : []
 
   const messages = []

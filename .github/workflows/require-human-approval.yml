@@ -41,8 +41,21 @@ jobs:
               pull_number,
             })
 
-            const approvedByOther = reviews.some(
-              (r) => r.state === 'APPROVED' && r.user.login !== author,
+            // レビューは提出のたびに新しいオブジェクトとして積み上がり、
+            // 過去の APPROVED は dismiss しない限り残り続ける。そのため
+            // 「一度でも承認があったか」ではなく「各レビュアーの最新の
+            // 意思表示が承認か」を見なければ、承認後に変更要求へ翻した
+            // レビュアーの古い承認がいつまでも有効として扱われてしまう。
+            const latestByReviewer = new Map()
+            for (const r of reviews) {
+              if (r.user.login === author) continue
+              const prev = latestByReviewer.get(r.user.login)
+              if (!prev || new Date(r.submitted_at) >= new Date(prev.submitted_at)) {
+                latestByReviewer.set(r.user.login, r)
+              }
+            }
+            const approvedByOther = [...latestByReviewer.values()].some(
+              (r) => r.state === 'APPROVED',
             )
 
             if (!approvedByOther) {
