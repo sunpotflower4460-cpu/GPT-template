@@ -15,10 +15,11 @@ GPTを賢くする仕組みではなく、逸脱を発見しやすくして最�
 ## 新規プロジェクト開始時の流れ
 
 1. `PHASE.md` を `P0` にする
-2. GPTに「AGENTS.mdを読んで」と伝える
+2. GPTに「AGENTS.mdを読んで」と伝える（GPTは `npm run status` で現状を把握してから動く）
 3. 既存資材があれば棚卸し（`INVENTORY.md`）、なければ質問（`QUESTIONS.md`）
 4. ユーザーが承認する
 5. 承認済みの範囲のみ実装する
+6. `npm run guard` で機械チェック（`.github/workflows/guard.yml` によりPRでも自動実行される）
 
 ## 効果の限界
 

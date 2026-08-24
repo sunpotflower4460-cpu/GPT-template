@@ -2,6 +2,7 @@ import { readFileSync, existsSync } from 'node:fs'
 import { join, relative } from 'node:path'
 import { readTable } from '../lib/markdown-table.mjs'
 import { walkFiles } from '../lib/fs-walk.mjs'
+import { loadConfig } from '../lib/config.mjs'
 
 // AGENTS.md ルール1: FEATURES.md に承認済みIDのない機能を実装しない
 // 実装ファイル先頭の `@feature F-00X` タグを走査し、FEATURES.md 上で
@@ -19,7 +20,7 @@ export function run({ root }) {
   const allIds = new Set(rows.map((r) => r.ID.trim()))
   const approvedIds = new Set(rows.filter((r) => r['状態']?.trim() === '承認').map((r) => r.ID.trim()))
 
-  const sourceRoot = join(root, 'src')
+  const sourceRoot = join(root, loadConfig(root).sourceRoot)
   const files = existsSync(sourceRoot) ? walkFiles(sourceRoot, { extensions: SOURCE_EXTENSIONS }) : []
 
   const messages = []

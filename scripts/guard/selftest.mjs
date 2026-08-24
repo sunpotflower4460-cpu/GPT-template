@@ -96,6 +96,70 @@ const cases = [
       return checkResult(root, 'phase-not-bundled', 'HEAD~1').ok === true
     },
   },
+  {
+    name: 'fail/no-unknown-before-p3: no-unknown-before-p3 が違反を検出する',
+    expect: () => {
+      const root = setupTempProject(join(FIXTURES, 'fail/no-unknown-before-p3'))
+      return checkResult(root, 'no-unknown-before-p3').ok === false
+    },
+  },
+  {
+    name: 'no-unknown-before-p3: P0/P1/P2 では未回答があってもスキップする',
+    expect: () => {
+      const root = setupTempProject(join(FIXTURES, 'fail/no-unknown-before-p3'))
+      writeFileSync(join(root, 'PHASE.md'), 'P1\n\nこのファイルはユーザーのみが更新する。\n')
+      git(['add', '-A'], root)
+      git(['commit', '-q', '-m', 'still in P1'], root)
+      return checkResult(root, 'no-unknown-before-p3').ok === true
+    },
+  },
+  {
+    name: 'no-new-deps: 新規依存の追加を検出する',
+    expect: () => {
+      const root = setupTempProject(join(FIXTURES, 'pass'))
+      writeFileSync(
+        join(root, 'package.json'),
+        JSON.stringify({ name: 'x', dependencies: { 'left-pad': '1.0.0' } }, null, 2),
+      )
+      git(['add', '-A'], root)
+      git(['commit', '-q', '-m', 'add dependency'], root)
+      return checkResult(root, 'no-new-deps', 'HEAD~1').ok === false
+    },
+  },
+  {
+    name: 'no-new-deps: 依存を追加しない変更は誤検知しない',
+    expect: () => {
+      const root = setupTempProject(join(FIXTURES, 'pass'))
+      writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'x' }, null, 2))
+      git(['add', '-A'], root)
+      git(['commit', '-q', '-m', 'no dependency change'], root)
+      return checkResult(root, 'no-new-deps', 'HEAD~1').ok === true
+    },
+  },
+  {
+    name: 'guard.config.json: entrance-count が sourceRoot/entranceDirs の上書きを反映する',
+    expect: () => {
+      // app/routes/ に2件、FEATURES.md の承認+入口ありは1件 → guard.config.json を
+      // 読んでいなければ既定の src/ を見て 0件（誤ってpass）になってしまう組み合わせ。
+      const root = setupTempProject(join(FIXTURES, 'config-override'))
+      return checkResult(root, 'entrance-count').ok === false
+    },
+  },
+  {
+    name: 'no-new-deps: package.json を依存込みで新規追加した場合も検出する',
+    expect: () => {
+      // fail/features-approved fixture には package.json が無い状態から出発し、
+      // 依存入りの package.json をまるごと新規追加するケースを再現する。
+      const root = setupTempProject(join(FIXTURES, 'fail/features-approved'))
+      writeFileSync(
+        join(root, 'package.json'),
+        JSON.stringify({ name: 'x', dependencies: { 'left-pad': '1.0.0' } }, null, 2),
+      )
+      git(['add', '-A'], root)
+      git(['commit', '-q', '-m', 'add package.json with a dependency'], root)
+      return checkResult(root, 'no-new-deps', 'HEAD~1').ok === false
+    },
+  },
 ]
 
 let allPass = true

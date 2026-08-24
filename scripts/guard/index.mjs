@@ -5,16 +5,22 @@ import { run as constraintsSourced } from './checks/constraints-sourced.mjs'
 import { run as tokensHardcoded } from './checks/tokens-hardcoded.mjs'
 import { run as entranceCount } from './checks/entrance-count.mjs'
 import { run as phaseNotBundled } from './checks/phase-not-bundled.mjs'
+import { run as noUnknownBeforeP3 } from './checks/no-unknown-before-p3.mjs'
+import { run as noNewDeps } from './checks/no-new-deps.mjs'
 
-// AGENTS.md の6条ルールのうち、「ユーザー回答を原文ママで記録する」（ルール4）は
-// 参照できる原文が存在しないため機械的に検証できない。残る5条それぞれに
-// 対応するチェックのみを実装する。
+// features-approved / constraints-sourced / tokens-hardcoded / entrance-count / phase-not-bundled は
+// AGENTS.md の6条ルールに対応する（「ユーザー回答を原文ママで記録する」ルール4だけは、
+// 参照できる原文が存在しないため機械的に検証できず対象外）。
+// no-unknown-before-p3 / no-new-deps は、6条とは別にAGENTS.md本文（フェーズ表の注記、
+// 「5. 実装のルール」）で明言されている規範に対応する。
 export const CHECKS = [
   { name: 'features-approved', run: featuresApproved },
   { name: 'constraints-sourced', run: constraintsSourced },
   { name: 'tokens-hardcoded', run: tokensHardcoded },
   { name: 'entrance-count', run: entranceCount },
   { name: 'phase-not-bundled', run: phaseNotBundled },
+  { name: 'no-unknown-before-p3', run: noUnknownBeforeP3 },
+  { name: 'no-new-deps', run: noNewDeps },
 ]
 
 export function runAll(opts) {

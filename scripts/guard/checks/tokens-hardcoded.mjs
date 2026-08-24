@@ -1,6 +1,7 @@
 import { readFileSync, existsSync } from 'node:fs'
 import { join, relative } from 'node:path'
 import { walkFiles } from '../lib/fs-walk.mjs'
+import { loadConfig } from '../lib/config.mjs'
 
 // AGENTS.md ルール3: tokens.css にない色・サイズ値をハードコードしない
 // src/ 配下の実装ファイルから直接の hex カラーリテラルを検出する。
@@ -9,9 +10,10 @@ const HEX_COLOR = /#[0-9a-fA-F]{3,6}\b/g
 const SOURCE_EXTENSIONS = ['.css', '.ts', '.tsx', '.js', '.jsx', '.vue', '.svelte']
 
 export function run({ root }) {
-  const sourceRoot = join(root, 'src')
+  const config = loadConfig(root)
+  const sourceRoot = join(root, config.sourceRoot)
   if (!existsSync(sourceRoot)) {
-    return { ok: true, messages: ['src/ が存在しないため検査対象なし'] }
+    return { ok: true, messages: [`${config.sourceRoot}/ が存在しないため検査対象なし`] }
   }
 
   const files = walkFiles(sourceRoot, { extensions: SOURCE_EXTENSIONS })
