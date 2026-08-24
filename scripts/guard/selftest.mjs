@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { mkdtempSync, cpSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, cpSync, writeFileSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -158,6 +158,55 @@ const cases = [
       git(['add', '-A'], root)
       git(['commit', '-q', '-m', 'add package.json with a dependency'], root)
       return checkResult(root, 'no-new-deps', 'HEAD~1').ok === false
+    },
+  },
+  {
+    name: 'fail/no-ai-default-palette-cream: パターン1（クリーム+セリフ+テラコッタ）を検出する',
+    expect: () => {
+      const root = setupTempProject(join(FIXTURES, 'fail/no-ai-default-palette-cream'))
+      return checkResult(root, 'no-ai-default-palette').ok === false
+    },
+  },
+  {
+    name: 'fail/no-ai-default-palette-dark: パターン2（ほぼ黒+アシッド）を検出する',
+    expect: () => {
+      const root = setupTempProject(join(FIXTURES, 'fail/no-ai-default-palette-dark'))
+      return checkResult(root, 'no-ai-default-palette').ok === false
+    },
+  },
+  {
+    name: 'no-ai-default-palette: パターン3（角丸ゼロ）を検出する',
+    expect: () => {
+      const root = setupTempProject(join(FIXTURES, 'pass'))
+      const cssPath = join(root, 'docs/04-design/tokens.css')
+      const css = readFileSync(cssPath, 'utf8').replace('--radius-s: 4px;', '--radius-s: 0px;').replace(
+        '--radius-m: 8px;',
+        '--radius-m: 0px;',
+      )
+      writeFileSync(cssPath, css)
+      git(['add', '-A'], root)
+      git(['commit', '-q', '-m', 'zero radius'], root)
+      return checkResult(root, 'no-ai-default-palette').ok === false
+    },
+  },
+  {
+    name: 'no-ai-default-palette: プレースホルダのままなら判定をスキップする',
+    expect: () => {
+      // pass fixture の tokens.css を、テンプレート本体と同じプレースホルダ形式に差し替える。
+      const root = setupTempProject(join(FIXTURES, 'pass'))
+      const placeholder = ':root {\n  --bg: /* プロジェクトごとに定義 */;\n  --accent: /* プロジェクトごとに定義 */;\n  --ff-display: /* プロジェクトごとに定義 */;\n  --radius-s: /* プロジェクトごとに定義 */;\n  --radius-m: /* プロジェクトごとに定義 */;\n}\n'
+      writeFileSync(join(root, 'docs/04-design/tokens.css'), placeholder)
+      return checkResult(root, 'no-ai-default-palette').ok === true
+    },
+  },
+  {
+    name: 'fail/craft-format: 見出し欠落・なぜ欄の短さを検出する',
+    expect: () => {
+      const root = setupTempProject(join(FIXTURES, 'fail/craft-format'))
+      const result = checkResult(root, 'craft-format')
+      const flagsMissingHeading = result.messages.some((m) => m.includes('C-901') && m.includes('なぜ'))
+      const flagsShortWhy = result.messages.some((m) => m.includes('C-902') && m.includes('短すぎ'))
+      return result.ok === false && flagsMissingHeading && flagsShortWhy
     },
   },
 ]
