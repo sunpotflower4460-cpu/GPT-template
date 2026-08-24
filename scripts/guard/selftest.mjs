@@ -114,6 +114,24 @@ const cases = [
     },
   },
   {
+    name: '回帰防止: docs/01-intake/ANSWERS.md の出荷時プレースホルダを偽の1件として数えない',
+    expect: () => {
+      // テンプレートが実際に出荷する ANSWERS.md（インデントされた見本のみで
+      // 実データが無い状態）をそのまま使う。見出しがインデントされていないと
+      // 「### Q-001」がパーサーに実エントリとして拾われ、永久に
+      // UNKNOWN/未回答1件として検出され続けるバグが実際にあった。
+      const root = setupTempProject(join(FIXTURES, 'fail/no-unknown-before-p3'))
+      const shippedAnswers = readFileSync(join(__dirname, '../../docs/01-intake/ANSWERS.md'), 'utf8')
+      writeFileSync(join(root, 'docs/01-intake/ANSWERS.md'), shippedAnswers)
+      git(['add', '-A'], root)
+      git(['commit', '-q', '-m', 'use shipped placeholder ANSWERS.md'], root)
+      const result = checkResult(root, 'no-unknown-before-p3')
+      // 0件（＝未回答）として弾かれるのは正しい。ただし「Q-001」という
+      // 見せかけの1件としてカウントされていないことを確認する。
+      return result.ok === false && !result.messages.some((m) => m.includes('Q-001'))
+    },
+  },
+  {
     name: 'no-new-deps: 新規依存の追加を検出する',
     expect: () => {
       const root = setupTempProject(join(FIXTURES, 'pass'))
@@ -142,6 +160,15 @@ const cases = [
       // app/routes/ に2件、FEATURES.md の承認+入口ありは1件 → guard.config.json を
       // 読んでいなければ既定の src/ を見て 0件（誤ってpass）になってしまう組み合わせ。
       const root = setupTempProject(join(FIXTURES, 'config-override'))
+      return checkResult(root, 'entrance-count').ok === false
+    },
+  },
+  {
+    name: 'fail/entrance-count-filename-pattern: ディレクトリ規約の外でも命名規則で検出する',
+    expect: () => {
+      // src/components/HomeScreen.tsx, SettingsPage.tsx はどちらも
+      // src/screens|pages|routes の外にあり、ディレクトリ規約だけでは0件になる。
+      const root = setupTempProject(join(FIXTURES, 'fail/entrance-count-filename-pattern'))
       return checkResult(root, 'entrance-count').ok === false
     },
   },

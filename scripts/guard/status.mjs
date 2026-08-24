@@ -68,19 +68,17 @@ function main() {
   }
 
   const entries = answersEntries(root)
-  if (entries.length > 0) {
-    const open = entries.filter((e) => {
-      // \s* は改行にもマッチするため、値が空欄の行では次の行の内容まで
-      // 誤って取り込んでしまう。[ \t]* に限定して行内だけを見る。
-      const confidence = e.match(/確度[:：][ \t]*(.*)/)?.[1]?.trim() ?? ''
-      const answer = e.match(/回答（原文ママ）[:：][ \t]*(.*)/)?.[1]?.trim() ?? ''
-      return confidence === 'UNKNOWN' || confidence === '' || answer === ''
-    })
-    lines.push('')
-    lines.push(`ANSWERS.md: 計${entries.length}件（UNKNOWN・未回答: ${open.length}件）`)
-    for (const e of open) {
-      lines.push(`  - ${e.split('\n')[0].trim()}`)
-    }
+  const open = entries.filter((e) => {
+    // \s* は改行にもマッチするため、値が空欄の行では次の行の内容まで
+    // 誤って取り込んでしまう。[ \t]* に限定して行内だけを見る。
+    const confidence = e.match(/確度[:：][ \t]*(.*)/)?.[1]?.trim() ?? ''
+    const answer = e.match(/回答（原文ママ）[:：][ \t]*(.*)/)?.[1]?.trim() ?? ''
+    return confidence === 'UNKNOWN' || confidence === '' || answer === ''
+  })
+  lines.push('')
+  lines.push(`ANSWERS.md: 計${entries.length}件（UNKNOWN・未回答: ${open.length}件）`)
+  for (const e of open) {
+    lines.push(`  - ${e.split('\n')[0].trim()}`)
   }
 
   const backlogPath = join(root, 'docs/03-scope/BACKLOG.md')
