@@ -1,0 +1,32 @@
+import { readFileSync, existsSync } from 'node:fs'
+import { join, relative } from 'node:path'
+import { walkFiles } from '../lib/fs-walk.mjs'
+
+// AGENTS.md ルール3: tokens.css にない色・サイズ値をハードコードしない
+// src/ 配下の実装ファイルから直接の hex カラーリテラルを検出する。
+// docs/ や craft/ など、原則やNG例を説明する文書は対象外（tokens.css 自体も対象外）。
+const HEX_COLOR = /#[0-9a-fA-F]{3,6}\b/g
+const SOURCE_EXTENSIONS = ['.css', '.ts', '.tsx', '.js', '.jsx', '.vue', '.svelte']
+
+export function run({ root }) {
+  const sourceRoot = join(root, 'src')
+  if (!existsSync(sourceRoot)) {
+    return { ok: true, messages: ['src/ が存在しないため検査対象なし'] }
+  }
+
+  const files = walkFiles(sourceRoot, { extensions: SOURCE_EXTENSIONS })
+  const messages = []
+  let ok = true
+
+  for (const file of files) {
+    const content = readFileSync(file, 'utf8')
+    const matches = content.match(HEX_COLOR)
+    if (matches) {
+      ok = false
+      messages.push(`${relative(root, file)}: ハードコードされた色 ${[...new Set(matches)].join(', ')}`)
+    }
+  }
+
+  if (ok) messages.push('src/ 配下に色のハードコードはありません')
+  return { ok, messages }
+}
