@@ -6,6 +6,8 @@ ChatGPTのGitHub連携でリポジトリを直接編集させる際に起きが�
 GPTを賢くする仕組みではなく、逸脱を発見しやすくして最終レビュー（Claude）のコストを下げるための装置である。
 `AGENTS.md` を憲法として運用し、`docs/` 配下の台帳で判断の根拠を追跡する。
 
+加えて、`project-kernel.json` とJSON出力を通じて、AI DEV DECKなどの監督層からこのリポジトリのProject Kernel capabilityを安全に検出できる。詳細は `docs/PROJECT_KERNEL.md` を参照。
+
 ## Template repositoryとしての設定手順
 
 1. GitHubでこのリポジトリの Settings を開く
@@ -14,7 +16,8 @@ GPTを賢くする仕組みではなく、逸脱を発見しやすくして最�
 4. **（必須）** 新規プロジェクト側の Settings > Branches でデフォルトブランチに保護ルールを設定する:
    - Require a pull request before merging
    - Require approvals: 1 以上
-   - Require status checks to pass before merging → `guard` と `require-human-approval` を選択
+   - Require status checks to pass before merging → `guard` と `check-approval` を選択
+   - workflowファイル名は `require-human-approval.yml` だが、required check contextはjob名の `check-approval`
    - この設定なしでは、PR作成者（GPT自身を含む）が誰の承認もなくマージできてしまい、`FEATURES.md` の「承認」記載がGPTの自己申告のまま通ってしまう
 
 ## 新規プロジェクト開始時の流れ
@@ -25,7 +28,31 @@ GPTを賢くする仕組みではなく、逸脱を発見しやすくして最�
 4. ユーザーが承認する
 5. 承認済みの範囲のみ実装する
 6. `npm run guard` で機械チェック（`.github/workflows/guard.yml` によりPRでも自動実行される）
-7. 人間がPRの内容を読んでから承認する（`require-human-approval` はレビューの存在だけを確認し、中身の妥当性までは見ない）
+7. 人間がPRの内容を読んでから承認する（`check-approval` はレビューの存在だけを確認し、中身の妥当性までは見ない）
+
+## Machine-readable Project Kernel
+
+既存のhuman-readableコマンドは後方互換のため維持される。
+
+```bash
+npm run status
+npm run guard
+npm run guard:selftest
+```
+
+監督ツールや自動化から読む場合は次を使う。
+
+```bash
+npm run status -- --json
+npm run guard -- --json
+npm run contract:selftest
+```
+
+- `status --json`: phase、承認済みfeature、UNKNOWN、constraint、human-required condition、kernel healthを返す。
+- `guard --json`: 各checkをstable JSONで返し、failureを `POLICY_FAILURE` / `GUARD_FAILURE` / `HUMAN_APPROVAL_REQUIRED` に分類する。
+- `project-kernel.json`: paths、capabilities、context routing、runtime、validation contractを宣言する。
+
+JSONは別の正本ではなく、既存Markdown/project filesから導かれるprojectionとして扱う。
 
 ## 適用の目安
 
@@ -39,6 +66,6 @@ GPTを賢くする仕組みではなく、逸脱を発見しやすくして最�
 
 - **guardは体裁を見るが意味は見ない。** 台帳同士の整合性・見出しの有無・色のハードコードなどは検出できるが、実装や「なぜ」欄の記述が実質的に正しいかどうかは判定できない。人間・Claudeによる意味的なレビューは省略できない
 - **意図的な回避への耐性は限定的。** ディレクトリ名やファイル名の慣習に依存する検出（`entrance-count` 等）は、命名を変えるだけで回避できる余地が残る。正直な失敗を拾う設計であり、悪意ある回避を防ぐ設計ではない
-- **ブランチ保護を設定して初めて意味を持つ仕組みがある。** 上記「必須」の設定を怠ると、`require-human-approval` は存在するだけで何も強制しない
+- **ブランチ保護を設定して初めて意味を持つ仕組みがある。** 上記「必須」の設定を怠ると、`check-approval` は存在するだけで何も強制しない
 - **実際のChatGPT/GPTセッションでの効果は未検証。** guardスクリプトの機械的な正しさは合成fixtureで検証済みだが、実際のGPTエージェントがこのテンプレート通りに振る舞うかどうかは別問題である
 - **`phase-not-bundled` / `no-new-deps` は「自分自身との比較」を避けるが、複数コミットの push までは追い切れない。** `main` に直接乗った状態（`guard.yml` の `push: branches: [main]` トリガーを含む）では、デフォルトブランチとのマージベースが HEAD 自身に収束するため直前コミット（`HEAD~1`）との比較にフォールバックする。1コミットの直接pushなら検出できるが、複数コミットをまとめてpushした場合、最後のコミットより前の変更は比較範囲に入らない
