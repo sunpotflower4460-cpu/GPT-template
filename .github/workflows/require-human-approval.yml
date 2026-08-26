@@ -3,15 +3,27 @@ name: require-human-approval
 # guard.yml が検証できるのは「台帳同士が矛盾していないか」までである。
 # FEATURES.md に「承認」と書いたのが本当にユーザーか、それとも実装した
 # GPT自身かはファイルの中身だけでは区別できない。この区別だけは、
-# GitHub上で認証されたアカウントによるレビュー承認という、GPTが
+# GitHub上で認証されたアカウントによる明示的な意思表示という、GPTが
 # 単独では偽装できない事実に頼るしかない。
+#
+# project-kernel.json の governance.maintainerMode で、その意思表示の形が
+# 2通りに分かれる（詳細は project-kernel.json の governance._comment、
+# および maintainer-approve-command.yml を参照）:
+#   - MULTI_MAINTAINER（既定・governance.maintainerMode 未指定時のフォールバック
+#     を含む）: 従来通り、PR作成者以外による Approve レビューを要求する。
+#   - SOLO_MAINTAINER: 別アカウントでのレビューは要求しない代わりに、
+#     maintainer-approve-command.yml が発行する `check-approval` チェックラン
+#     （`/approve-maintainer` コメントをGitHub上のadmin権限で検証した上でのみ
+#     発行される）を要求する。PRを作成しただけ、CIがgreenなだけでは
+#     承認したことにはならない。
 #
 # このワークフロー単体では何も強制しない。効果を持たせるには、
 # リポジトリの Settings > Branches で以下を有効にする必要がある:
 #   - Require a pull request before merging
-#   - Require approvals: 1 以上
+#   - Require approvals: 1 以上（SOLO_MAINTAINERリポジトリでは0でも良いが、
+#     Require status checks to pass の check-approval が実質的な承認ゲートになる）
 #   - Require status checks to pass before merging
-#     （このワークフローの require-human-approval を選択）
+#     （このワークフローの require-human-approval / check-approval を選択）
 # README.md の設定手順を参照。
 
 on:
@@ -22,19 +34,74 @@ on:
 
 permissions:
   pull-requests: read
+  contents: read
+  checks: read
 
 jobs:
   check-approval:
     runs-on: ubuntu-latest
     steps:
-      - name: PR作成者以外による承認レビューがあるか確認する
+      - name: maintainerModeに応じて必要な承認があるか確認する
         uses: actions/github-script@v7
         with:
           script: |
             const { owner, repo } = context.repo
             const pull_number = context.payload.pull_request.number
             const author = context.payload.pull_request.user.login
+            const headSha = context.payload.pull_request.head.sha
 
+            // status.mjs の getMaintainerMode() と同じフォールバック規則:
+            // project-kernel.json が存在しない/不正なJSON/governanceを欠く/
+            // maintainerModeが未知の値、のいずれでも安全側(=従来通り厳しい方)の
+            // MULTI_MAINTAINERへ倒す。project-kernel.json自体はcheckout不要な
+            // Contents APIで読む(このワークフローはactions/checkoutを行わない)。
+            async function readMaintainerMode() {
+              let content
+              try {
+                const res = await github.rest.repos.getContent({ owner, repo, path: 'project-kernel.json', ref: headSha })
+                content = res.data
+              } catch {
+                return 'MULTI_MAINTAINER'
+              }
+              if (Array.isArray(content) || !content.content) return 'MULTI_MAINTAINER'
+              try {
+                const text = Buffer.from(content.content, 'base64').toString('utf8')
+                const parsed = JSON.parse(text)
+                const mode = parsed?.governance?.maintainerMode
+                return mode === 'SOLO_MAINTAINER' || mode === 'MULTI_MAINTAINER' ? mode : 'MULTI_MAINTAINER'
+              } catch {
+                return 'MULTI_MAINTAINER'
+              }
+            }
+
+            const maintainerMode = await readMaintainerMode()
+
+            if (maintainerMode === 'SOLO_MAINTAINER') {
+              // maintainer-approve-command.yml が /approve-maintainer コメントを
+              // GitHub上のadmin権限で検証した後にだけ発行する、この現在head SHAに
+              // 束縛された check-approval チェックランを探す。新しいcommitがpush
+              // されるとhead SHAが変わるため、このジョブは(過去のSHAへの承認とは
+              // 無関係に)自動的に「未承認」へ戻る — 承認の失効に専用のstateストアは
+              // 要らない。
+              const { data } = await github.rest.checks.listForRef({ owner, repo, ref: headSha })
+              const approved = data.check_runs.some(
+                (run) => run.name === 'check-approval' && run.status === 'completed' && run.conclusion === 'success',
+              )
+              if (!approved) {
+                core.setFailed(
+                  'このリポジトリは governance.maintainerMode = SOLO_MAINTAINER です。' +
+                    '別アカウントによるレビュー承認は要求しませんが、PRを作成しただけ・' +
+                    'CIがgreenなだけでは承認とみなしません。maintainer本人がこのPRの内容を' +
+                    '実際に読んだ上で、PRのコメント欄に `/approve-maintainer` とコメントして' +
+                    '明示的に承認してください（AI・botのレビューはEvidenceであり、承認の' +
+                    '代わりにはなりません）。新しいcommitをpushすると、この承認は失効し' +
+                    '再度必要になります。',
+                )
+              }
+              return
+            }
+
+            // MULTI_MAINTAINER（既定）: 従来通りの挙動。
             const { data: reviews } = await github.rest.pulls.listReviews({
               owner,
               repo,

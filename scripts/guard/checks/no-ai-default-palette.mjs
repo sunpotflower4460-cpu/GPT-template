@@ -79,6 +79,13 @@ export function run({ root }) {
     )
   }
 
-  if (ok) messages.push('生成AI頻出の既定パターンとの一致は検出されませんでした')
-  return { ok, messages }
+  if (ok) {
+    messages.push('生成AI頻出の既定パターンとの一致は検出されませんでした')
+    return { ok, messages }
+  }
+  // ok:false のままCIをブロックする挙動は変えない（既存selftestが検証済み）。
+  // ただしこの検査は元来ヒューリスティクスであり「差し戻し」ではなく「C-050に
+  // 照らして確認せよ」という位置づけ（上のコメント参照）なので、構造化出力を
+  // 読む側（--json）にはブロッキング違反と区別できるよう severity を添える。
+  return { ok, messages, severity: 'advisory' }
 }

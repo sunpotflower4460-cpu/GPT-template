@@ -11,11 +11,12 @@ GPTを賢くする仕組みではなく、逸脱を発見しやすくして最�
 1. GitHubでこのリポジトリの Settings を開く
 2. General タブの「Template repository」にチェックを入れる
 3. 新規プロジェクトは「Use this template」から作成する
-4. **（必須）** 新規プロジェクト側の Settings > Branches でデフォルトブランチに保護ルールを設定する:
+4. **（必須）** 新規プロジェクト側の Settings > Branches でデフォルトブランチに保護ルールを設定する。複数人で運用する場合（`MULTI_MAINTAINER`、`project-kernel.json` の `governance.maintainerMode` 未指定時の既定）:
    - Require a pull request before merging
    - Require approvals: 1 以上
    - Require status checks to pass before merging → `guard` と `require-human-approval` を選択
    - この設定なしでは、PR作成者（GPT自身を含む）が誰の承認もなくマージできてしまい、`FEATURES.md` の「承認」記載がGPTの自己申告のまま通ってしまう
+5. **solo maintainer（GitHubアカウントが実質1つしかない）で運用する場合**は、`project-kernel.json` に `governance.maintainerMode: "SOLO_MAINTAINER"` を宣言した上で、上記4のうち **Require approvals は 0（チェックを外す）** にすること。GitHubは仕組み上、PR作成者自身によるレビュー承認を許可しない（＝「Require approvals: 1以上」を有効にしたままだと、solo maintainerは自分のPRを永久に承認できない）。承認ゲートは、この場合 `check-approval` ステータスチェック（`/approve-maintainer` コマンドで発行される）だけが担う。詳細はAGENTS.md「PR承認モード」を参照
 
 ## 新規プロジェクト開始時の流れ
 
@@ -25,7 +26,29 @@ GPTを賢くする仕組みではなく、逸脱を発見しやすくして最�
 4. ユーザーが承認する
 5. 承認済みの範囲のみ実装する
 6. `npm run guard` で機械チェック（`.github/workflows/guard.yml` によりPRでも自動実行される）
-7. 人間がPRの内容を読んでから承認する（`require-human-approval` はレビューの存在だけを確認し、中身の妥当性までは見ない）
+7. 人間がPRの内容を読んでから承認する — `MULTI_MAINTAINER`（既定）では別アカウントによるレビュー承認、`SOLO_MAINTAINER` では作成者本人による `/approve-maintainer` コメント。いずれも `require-human-approval` はその意思表示の存在だけを確認し、中身の妥当性までは見ない
+
+## Project Kernel（project-kernel.json）
+
+リポジトリ直下の `project-kernel.json` は、外部のオーケストレーター（このテンプレートを使うプロジェクトを複数まとめて管理するSupervisor的な仕組みなど）が、GPT/Codexとは別に機械的にこのリポジトリの構造を把握するための宣言ファイル。
+
+- `paths`: SOUL/FEATURES/CONSTRAINTS等、主要ドキュメントの場所
+- `contextRouting`: どれを毎回読み(`core`)、どれを作業内容次第で読み(`scoped`)、どれを必要な時だけ読むか(`onDemand`)
+- `runtime` / `validation`: 実行コマンドとCIのトリガー方式
+- `dependencyPolicyDefault`: 実際の値は `guard.config.json` を優先する。存在しない場合の既定値の説明のみ
+
+`npm run --silent status -- --json` / `npm run --silent guard -- --json` は、このファイルとは別に、Markdown台帳や実行結果から都度生成される投影(projection)を返す（`--silent` を付けないとnpm自身のバナー行がJSONの前に混ざる）。`project-kernel.json` を消してもこの2つのJSONコマンドは動く（`status --json` の `kernel.exists` が `false` になるだけ）。
+
+## Template自体の開発（maintainer mode）とTemplateを使うプロジェクト（consumer mode）
+
+`AGENTS.md` のP0〜P4・6条ルールは、**このテンプレートを使って新規プロジェクトを作ったとき**に、そのプロジェクトのGPTが従うべきガバナンスである。
+
+このリポジトリ自身（`scripts/guard/**`・`AGENTS.md`・`project-kernel.json` のスキーマ・`README.md` など、テンプレートの機構そのもの）を保守・進化させる作業は別扱いとする。テンプレート機構自体の変更にconsumer向けのP0〜P4ゲート（例:「P1でコード禁止」）を適用すると、テンプレート自体を永久に改修できなくなる。
+
+- **consumer mode**: このリポジトリから「Use this template」で作られた新規プロジェクトでの作業。`AGENTS.md` のP0〜P4・6条ルールをそのまま適用する
+- **maintainer mode**: このリポジトリ自身（`sunpotflower4460-cpu/GPT-template`）に対する、テンプレート機構そのものの変更作業。P0〜P4ゲートの対象外だが、`npm run guard` / `npm run guard:selftest` を通すことは変わらず必須（テンプレート自身の壊れは、それを使う全プロジェクトに波及するため、consumer mode以上に厳格であるべき）
+
+どちらのmodeで作業しているかは、変更対象のファイルで判断する。`docs/**`・`craft/situations/**` の内容（テンプレートが将来消費者へ提供する材料そのもの）を編集している場合は基本的にmaintainer mode、それ以外のconsumerプロジェクト固有のコード・ドキュメントを編集している場合はconsumer mode、というのが実務上の目安になる。
 
 ## 適用の目安
 

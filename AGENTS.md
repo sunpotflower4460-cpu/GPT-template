@@ -2,6 +2,8 @@
 
 GPT / Codex がリポジトリ編集の前に最初に読む憲法。作業開始前に `npm run status` を実行し、現在のフェーズと未確定事項を把握すること。
 
+外部オーケストレーター（Supervisorなど、GPT自身ではないプログラムからこのリポジトリを扱う場合）は `project-kernel.json` を最初に読む。主要ドキュメントのパス・コンテキストの優先度（CORE/SCOPED/ON_DEMAND）・実行コマンド・検証方式を宣言する。`npm run --silent status -- --json` / `npm run --silent guard -- --json` は同じ情報を機械可読形式で返す（`--silent` を付けないとnpm自身のバナー行がJSONの前に出力され、そのままではパースできない。人間向け出力の後方互換は維持したまま追加した機能であり、既存の出力形式は変わらない）。
+
 ## ルール（6条のみ・違反は差し戻し）
 
 1. `FEATURES.md` に承認済みIDのない機能を実装しない
@@ -30,6 +32,61 @@ GPT / Codex がリポジトリ編集の前に最初に読む憲法。作業開�
 | P4 | 自己監査 | 差分の自己申告、`HANDOFF.md` 生成 |
 
 P1 に `UNKNOWN` または未回答が1件でも残っている場合、P3に進んではならない。P0 では、既存資材の有無で `INVENTORY.md`／`QUESTIONS.md` を使い分ける（詳細は `QUESTIONS.md`）。
+
+### ガバナンスとランタイムの分離
+
+P0〜P4 は人間の承認を要するプロダクトガバナンスであり、フェーズの移動そのものは人間だけが決める（ルール5）。
+これに対し、P3（実装）の内部で行う次の行為は、フェーズ移動ではないため1つずつ人間の確認を挟む必要はない。
+
+```
+INSPECT → IMPLEMENT → TEST → DEBUG → REVIEW → REPAIR → VERIFY
+```
+
+「実装中に毎回止まる」と「勝手にフェーズを進める」は別の問題であり、混同しない。前者はP3の中で自律的に回してよく、後者はルール5・6で常に禁止する。
+
+### maintainer mode（テンプレート機構自体の変更）
+
+上記のP0〜P4は、**このテンプレートを使って作られた新規プロジェクト**（consumer mode）が従うガバナンスである。
+このリポジトリ自身（`sunpotflower4460-cpu/GPT-template`）に対して、`scripts/guard/**`・この`AGENTS.md`・`project-kernel.json`のスキーマ・`README.md`など、テンプレートの機構そのものを保守・進化させる作業は**maintainer modeとしてP0〜P4ゲートの対象外**とする。consumer向けのP0〜P4（例:「P1でコード禁止」）をテンプレート機構自体の変更に適用すると、テンプレート自身を永久に改修できなくなるため。
+ただし `npm run guard` / `npm run guard:selftest` を通すことはmaintainer modeでも変わらず必須であり、consumer modeより厳格であるべき（テンプレート自身の壊れは、それを使う全プロジェクトに波及する）。どちらのmodeで作業しているかの判断基準はREADME.md「Template自体の開発（maintainer mode）とTemplateを使うプロジェクト（consumer mode）」を参照する。
+
+## PR承認モード: SOLO_MAINTAINER / MULTI_MAINTAINER
+
+上の「maintainer mode」（テンプレート機構自体の変更かどうか）とは**別の概念**である。こちらは `project-kernel.json` の `governance.maintainerMode` が制御する、`.github/workflows/require-human-approval.yml` の `check-approval` チェックの意味そのものを指す。
+
+「作成者以外による人間のレビュー承認」というルールは、複数人がいる前提のリポジトリでは機能するが、solo maintainer（GitHubアカウントが実質1つしかない）リポジトリでは作成者自身しかレビュアーがいないため、正規のフローのまま永久にPRを完了できない。この制約を一時的にバイパスする（checkを無効化する・branch protectionを外す等）のではなく、ガバナンスとして正式に2つのモードをサポートする。
+
+いずれのモードでも共通の最重要原則: **人間以外（Claude/ChatGPT/Codex/Cursor Bugbot/CodeRabbit/Worker/Supervisorなど）は最終承認者になれない。** AI・botのレビューはEvidence（判断材料）であり、最終的なマージ許可は常に人間の明示的な意思決定として扱う。
+
+| governance.maintainerMode | 挙動 |
+|---|---|
+| `MULTI_MAINTAINER`（既定・未指定時のフォールバック） | 従来通り。PR作成者以外による `APPROVED` レビューを要求する |
+| `SOLO_MAINTAINER` | 別アカウントでの承認は要求しない。代わりに、PR作成者本人が `/approve-maintainer` とPRにコメントし、それが GitHub上の実際のCollaborator Permission（`admin`）で検証されたときにだけ、`check-approval` チェックが成功する。PRを作成しただけ・CIがgreenなだけでは承認したことにならない |
+
+`SOLO_MAINTAINER` の承認は現在のhead SHAに束縛される。新しいcommitをpushすると自動的に失効し、再度 `/approve-maintainer` が必要になる（詳細は `maintainer-approve-command.yml` のコメントを参照）。
+
+このリポジトリ自身（`sunpotflower4460-cpu/GPT-template`）は solo maintainer で運用しているため、`project-kernel.json` の `governance.maintainerMode` を `SOLO_MAINTAINER` と宣言している。このテンプレートから作られる新規プロジェクトは、複数人での運用を想定するなら明示的に `MULTI_MAINTAINER` を宣言するか、このキー自体を省略すればよい（省略時は `MULTI_MAINTAINER` として扱われるため、既存プロジェクトの挙動が黙って緩むことはない）。
+
+## 依存関係ポリシー
+
+新規パッケージの追加可否は `npm run guard` の `no-new-deps` が機械検証する。既定は **DEV_ONLY**（devDependencies は自由、production dependencies の新規追加は禁止）。
+リポジトリ直下に `guard.config.json` を置き、`dependencyPolicy` で上書きできる（存在しない場合は既定値のまま）。
+
+| mode | 挙動 |
+|---|---|
+| `NONE` | dependencies・devDependencies を問わず新規追加0件を要求する（最も厳格） |
+| `DEV_ONLY`（既定） | devDependencies は許可。production dependencies は禁止 |
+| `ALLOWLIST` | `allowlist` に列挙した名前の新規追加のみ許可 |
+| `REVIEW_PRODUCTION` | production dependencies の新規追加はguardを失敗させないが、severity:`advisory` として報告し人間の確認を促す |
+| `OPEN` | 新規依存の追加を制限しない |
+
+```json
+{
+  "dependencyPolicy": { "mode": "ALLOWLIST", "allowlist": ["zod"] }
+}
+```
+
+厳格さが必要な既存プロジェクトは `mode: "NONE"` に戻せば、以前の「1PRあたり新規依存は0」相当の挙動になる。
 
 ## 材料の使い方
 

@@ -1,0 +1,73 @@
+{
+  "schemaVersion": 1,
+  "kind": "ai-project-kernel",
+  "paths": {
+    "agents": "AGENTS.md",
+    "phase": "PHASE.md",
+    "soul": "docs/00-soul/SOUL.md",
+    "designBrief": "docs/00-soul/DESIGN_BRIEF.md",
+    "answers": "docs/01-intake/ANSWERS.md",
+    "inventory": "docs/01-intake/INVENTORY.md",
+    "questions": "docs/01-intake/QUESTIONS.md",
+    "decisions": "docs/02-decisions/DECISIONS.md",
+    "constraints": "docs/02-decisions/CONSTRAINTS.md",
+    "features": "docs/03-scope/FEATURES.md",
+    "backlog": "docs/03-scope/BACKLOG.md",
+    "uiJudgments": "docs/04-design/UI_JUDGMENTS.md",
+    "tokens": "docs/04-design/tokens.css",
+    "handoff": "docs/05-handoff/HANDOFF.md",
+    "claudeReview": "docs/05-handoff/CLAUDE_REVIEW.md",
+    "craftIndex": "craft/INDEX.md",
+    "craftHowTo": "craft/HOW_TO_USE.md",
+    "guardConfig": "guard.config.json"
+  },
+  "contextRouting": {
+    "_comment": "For an orchestrator assembling a prompt: read core every time, scoped only when the task touches that area, onDemand only when explicitly needed. Values are keys into paths above.",
+    "core": ["agents", "phase", "soul", "constraints", "features", "guardConfig", "craftIndex"],
+    "scoped": ["decisions", "uiJudgments", "tokens"],
+    "onDemand": ["answers", "inventory", "questions", "backlog", "craftHowTo", "handoff", "claudeReview", "designBrief"]
+  },
+  "governance": {
+    "_comment": "P0-P4 in PHASE.md are product-governance gates a human must move through (README.md 「新規プロジェクト開始時の流れ」). Once inside P3, the AI does not need to stop between the runtime activities below — see AGENTS.md 「5. ガバナンスとランタイムの分離」. maintainerMode is unrelated to P0-P4: it tells require-human-approval.yml's check-approval job whether this repo has a second human who can review PRs (MULTI_MAINTAINER, the default when this key is absent — preserves the original 'approval from someone other than the author' behavior) or exactly one maintainer who is also the PR author (SOLO_MAINTAINER — requires an explicit, GitHub-identity-verified /approve-maintainer PR comment from that maintainer instead, never merely opening the PR or a green CI run). AI/bot reviews (Codex, Cursor Bugbot, CodeRabbit, Claude) are evidence for that human decision, never a substitute for it, in either mode.",
+    "phases": ["P0", "P1", "P2", "P3", "P4"],
+    "runtimeActivitiesWithinP3": ["INSPECT", "IMPLEMENT", "TEST", "DEBUG", "REVIEW", "REPAIR", "VERIFY"],
+    "maintainerMode": "SOLO_MAINTAINER"
+  },
+  "capabilities": {
+    "structuredStatus": true,
+    "structuredGuard": true,
+    "dependencyPolicy": true
+  },
+  "dependencyPolicyDefault": {
+    "_comment": "The mode guard/no-new-deps.mjs uses when guard.config.json (paths.guardConfig) does not exist or does not set dependencyPolicy. If that file exists and sets its own dependencyPolicy, that value wins — this is a fallback description, not the live value.",
+    "mode": "DEV_ONLY"
+  },
+  "runtime": {
+    "_comment": "statusJson/guardJson use --silent so npm's own banner lines ('> pkg@version script') don't precede the JSON on stdout — without it, output is not valid JSON as-is. setup picks between `npm ci` and `npm install --no-package-lock` depending on whether a lockfile exists: this repo ships none today (only refs/ has one, for the reference app, so `npm ci` alone would fail with EUSAGE), but a project created from this template can add real dependencies and commit a real lockfile later — `npm install --no-package-lock` ignores an existing lockfile even when present (not just skips writing one), so a blanket `--no-package-lock` would silently stop honoring that project's locked versions. `--no-package-lock` also keeps the still-lockfile-less case from leaving a fresh checkout dirty: npm's package-lock setting defaults to true, so a bare `npm install` would create an untracked root package-lock.json as a side effect. setup uses an if/else, not `test ... && npm ci || npm install`: the `||` form also runs the install fallback when `npm ci` exists but fails for a real reason (a stale/corrupt lockfile, a registry error), silently masking that failure as if the lockfile were simply absent. Checks for npm-shrinkwrap.json as well as package-lock.json: `npm ci` accepts either (shrinkwrap takes precedence if both exist), and a project that commits a shrinkwrap instead of a plain lockfile still needs `npm ci`, not the non-locking install path.",
+    "setup": "if [ -f package-lock.json ] || [ -f npm-shrinkwrap.json ]; then npm ci; else npm install --no-package-lock; fi",
+    "status": "npm run status",
+    "statusJson": "npm run --silent status -- --json",
+    "guard": "npm run guard",
+    "guardJson": "npm run --silent guard -- --json",
+    "selftest": "npm run guard:selftest"
+  },
+  "validation": {
+    "_comment": "Mirrors .github/workflows/guard.yml and require-human-approval.yml as shipped. The push strategy only runs for the branches listed — guard.yml's push trigger is 'branches: [main]', so a push to any other branch (e.g. a feature branch) does NOT get push validation; only the pull_request strategy applies there. An orchestrator must check `branches` before waiting on a push-triggered check on a non-listed branch, or it will wait forever — on a feature branch it must open a PR before CI can run at all, instead of waiting on a bare branch push that will never get checked. Each check's `category` distinguishes what kind of failure it represents: `check-approval` (require-human-approval.yml) always reports a plain GitHub Actions `failure` conclusion when it fails — never `action_required` — so an orchestrator that only trusts `action_required` to mean 'a human must act' will misclassify a missing-approval failure as a code failure and hand it back to an AI for a pointless 'fix'. `guard` failing is a real POLICY_FAILURE/CODE_FAILURE the AI can act on.",
+    "strategies": [
+      {
+        "type": "push",
+        "required": true,
+        "branches": ["main"],
+        "checks": [{ "name": "guard", "category": "GUARD_FAILURE" }]
+      },
+      {
+        "type": "pull_request",
+        "required": true,
+        "checks": [
+          { "name": "guard", "category": "GUARD_FAILURE" },
+          { "name": "check-approval", "category": "HUMAN_APPROVAL_REQUIRED" }
+        ]
+      }
+    ]
+  }
+}

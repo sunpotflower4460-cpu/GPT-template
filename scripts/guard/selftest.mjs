@@ -4,8 +4,9 @@ import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { execFileSync } from 'node:child_process'
-import { runAll } from './index.mjs'
+import { runAll, CHECKS } from './index.mjs'
 import { resolveDefaultBase } from './lib/git-base.mjs'
+import { gatherStatus, isValidKernelManifest, getMaintainerMode } from './status.mjs'
 
 // scripts/guard/ の各チェックが「検出すべき違反を実際に検出できるか」を
 // fixtures/ を使って検証するセルフテスト。
@@ -39,6 +40,70 @@ function setupTempProject(fixtureDir) {
 function checkResult(root, checkName, base) {
   return runAll({ root, base }).find((r) => r.name === checkName)
 }
+
+// no-new-deps は dependencyPolicy を base commit の guard.config.json から読む
+// （HEAD からは読まない。「同じコミットで緩めて同じコミットで使う」を防ぐため）。
+// そのためテストでも、ポリシー設定は依存追加とは別のコミットにしておく必要がある。
+function setDependencyPolicy(root, dependencyPolicy) {
+  writeFileSync(join(root, 'guard.config.json'), JSON.stringify({ dependencyPolicy }))
+  git(['add', '-A'], root)
+  git(['commit', '-q', '-m', 'set dependencyPolicy'], root)
+}
+
+// このリストは sunpotflower4460-cpu/GPT-PWA-Superbvisor の
+// worker/src/projectKernel.test.ts (INVALID_KERNEL_MANIFEST_FIXTURES) と
+// 意図的に同じ不正パターンを揃えている。producer側(このファイル、
+// isValidKernelManifest())とconsumer側(TSのschema-v1 parser、
+// parseProjectKernel())が同じ入力群に対して同じ判定(有効/無効)をすることを、
+// それぞれのテストスイートから独立に検証するため。どちらか一方だけ直して
+// 契約がずれないよう、この配列を変更したら必ずもう一方の同名リストも
+// 同じ変更内容で追随すること。
+const VALID_KERNEL_MANIFEST = {
+  schemaVersion: 1,
+  kind: 'ai-project-kernel',
+  paths: { readme: 'README.md' },
+  capabilities: {},
+  contextRouting: { core: ['readme'] },
+}
+
+// 各fixtureはVALID_KERNEL_MANIFESTから正確に1項目だけを崩す。旧
+// isValidKernelManifest()はcontextRoutingの「存在」自体を(中身は見ずに)必須
+// としていたため、contextRoutingを省いたfixtureは意図した理由(kind欠落など)
+// とは無関係に「たまたま」旧実装でも拒否されてしまい、新しいチェックを実際には
+// 検証できていなかった。各fixtureに有効なcontextRoutingを含める(対象自体が
+// contextRoutingの場合を除く)ことで、旧実装との比較(git stash等)で「このfixture
+// は新しいチェックが無ければ旧実装を通り抜けていた」ことを1項目ずつ再現できる。
+const INVALID_KERNEL_MANIFEST_FIXTURES = [
+  ['missing-kind', { schemaVersion: 1, paths: { readme: 'README.md' }, capabilities: {}, contextRouting: { core: ['readme'] } }],
+  ['wrong-kind', { schemaVersion: 1, kind: 'something-else', paths: { readme: 'README.md' }, capabilities: {}, contextRouting: { core: ['readme'] } }],
+  ['schema-version-string', { schemaVersion: '1', kind: 'ai-project-kernel', paths: { readme: 'README.md' }, capabilities: {}, contextRouting: { core: ['readme'] } }],
+  ['schema-version-unsupported', { schemaVersion: 2, kind: 'ai-project-kernel', paths: { readme: 'README.md' }, capabilities: {}, contextRouting: { core: ['readme'] } }],
+  ['capabilities-missing', { schemaVersion: 1, kind: 'ai-project-kernel', paths: { readme: 'README.md' }, contextRouting: { core: ['readme'] } }],
+  ['capabilities-non-boolean', { schemaVersion: 1, kind: 'ai-project-kernel', paths: { readme: 'README.md' }, capabilities: { foo: 'yes' }, contextRouting: { core: ['readme'] } }],
+  ['paths-empty', { schemaVersion: 1, kind: 'ai-project-kernel', paths: {}, capabilities: {}, contextRouting: {} }],
+  ['paths-non-string-value', { schemaVersion: 1, kind: 'ai-project-kernel', paths: { readme: 123 }, capabilities: {}, contextRouting: { core: ['readme'] } }],
+  ['paths-unsafe', { schemaVersion: 1, kind: 'ai-project-kernel', paths: { readme: '../escape.md' }, capabilities: {}, contextRouting: { core: ['readme'] } }],
+  ['context-routing-unknown-key', { schemaVersion: 1, kind: 'ai-project-kernel', paths: { readme: 'README.md' }, capabilities: {}, contextRouting: { core: ['missing'] } }],
+  ['context-routing-tier-not-array', { schemaVersion: 1, kind: 'ai-project-kernel', paths: { readme: 'README.md' }, capabilities: {}, contextRouting: { core: 'readme' } }],
+  ['runtime-not-object', { schemaVersion: 1, kind: 'ai-project-kernel', paths: { readme: 'README.md' }, capabilities: {}, contextRouting: { core: ['readme'] }, runtime: 'npm run x' }],
+  ['runtime-empty-string-value', { schemaVersion: 1, kind: 'ai-project-kernel', paths: { readme: 'README.md' }, capabilities: {}, contextRouting: { core: ['readme'] }, runtime: { setup: '   ' } }],
+  ['validation-strategies-not-array', { schemaVersion: 1, kind: 'ai-project-kernel', paths: { readme: 'README.md' }, capabilities: {}, contextRouting: { core: ['readme'] }, validation: { strategies: 'nope' } }],
+  ['validation-strategy-invalid-type', { schemaVersion: 1, kind: 'ai-project-kernel', paths: { readme: 'README.md' }, capabilities: {}, contextRouting: { core: ['readme'] }, validation: { strategies: [{ type: 'magic', checks: [] }] } }],
+  ['validation-strategy-required-not-boolean', { schemaVersion: 1, kind: 'ai-project-kernel', paths: { readme: 'README.md' }, capabilities: {}, contextRouting: { core: ['readme'] }, validation: { strategies: [{ type: 'push', required: 'yes', checks: [] }] } }],
+  ['validation-strategy-branches-not-string-array', { schemaVersion: 1, kind: 'ai-project-kernel', paths: { readme: 'README.md' }, capabilities: {}, contextRouting: { core: ['readme'] }, validation: { strategies: [{ type: 'push', branches: [123], checks: [] }] } }],
+  ['validation-strategy-checks-not-array', { schemaVersion: 1, kind: 'ai-project-kernel', paths: { readme: 'README.md' }, capabilities: {}, contextRouting: { core: ['readme'] }, validation: { strategies: [{ type: 'push', checks: 'nope' }] } }],
+  ['validation-strategy-check-missing-name', { schemaVersion: 1, kind: 'ai-project-kernel', paths: { readme: 'README.md' }, capabilities: {}, contextRouting: { core: ['readme'] }, validation: { strategies: [{ type: 'push', checks: [{ category: 'GUARD_FAILURE' }] }] } }],
+  ['paths-unsafe-whitespace-traversal', { schemaVersion: 1, kind: 'ai-project-kernel', paths: { readme: ' ../escape.md' }, capabilities: {}, contextRouting: { core: ['readme'] } }],
+  ['paths-unsafe-whitespace-absolute', { schemaVersion: 1, kind: 'ai-project-kernel', paths: { readme: ' /absolute.md' }, capabilities: {}, contextRouting: { core: ['readme'] } }],
+  ['modes-non-string-item', { schemaVersion: 1, kind: 'ai-project-kernel', paths: { readme: 'README.md' }, capabilities: {}, contextRouting: { core: ['readme'] }, modes: [123] }],
+  ['modes-empty-string-item', { schemaVersion: 1, kind: 'ai-project-kernel', paths: { readme: 'README.md' }, capabilities: {}, contextRouting: { core: ['readme'] }, modes: [''] }],
+  ['context-routing-not-object', { schemaVersion: 1, kind: 'ai-project-kernel', paths: { readme: 'README.md' }, capabilities: {}, contextRouting: 'not-an-object' }],
+  ['context-routing-inherited-key', { schemaVersion: 1, kind: 'ai-project-kernel', paths: { readme: 'README.md' }, capabilities: {}, contextRouting: { core: ['toString'] } }],
+  ['paths-windows-drive-absolute', { schemaVersion: 1, kind: 'ai-project-kernel', paths: { readme: 'C:/Windows/System32/drivers/etc/hosts' }, capabilities: {}, contextRouting: { core: ['readme'] } }],
+  ['paths-null-byte', { schemaVersion: 1, kind: 'ai-project-kernel', paths: { readme: 'README.md\u0000' }, capabilities: {}, contextRouting: { core: ['readme'] } }],
+  ['governance-not-object', { schemaVersion: 1, kind: 'ai-project-kernel', paths: { readme: 'README.md' }, capabilities: {}, contextRouting: { core: ['readme'] }, governance: 'not-an-object' }],
+  ['governance-maintainer-mode-invalid', { schemaVersion: 1, kind: 'ai-project-kernel', paths: { readme: 'README.md' }, capabilities: {}, contextRouting: { core: ['readme'] }, governance: { maintainerMode: 'SOLO' } }],
+]
 
 const cases = [
   {
@@ -162,6 +227,55 @@ const cases = [
     },
   },
   {
+    name: '回帰防止: optionalDependenciesへの新規追加もproduction dependencyとして扱う',
+    expect: () => {
+      // npmは`--omit=optional`を指定しない限りoptionalDependenciesを既定で
+      // インストールする。dependencies/devDependenciesしか見ていなければ、
+      // ここへ追加するだけでNONE/DEV_ONLY/ALLOWLIST/REVIEW_PRODUCTIONいずれの
+      // ポリシーもすり抜けられてしまう(既定のDEV_ONLYでも本来は禁止されるはず)。
+      const root = setupTempProject(join(FIXTURES, 'pass'))
+      writeFileSync(
+        join(root, 'package.json'),
+        JSON.stringify({ name: 'x', optionalDependencies: { 'left-pad': '1.0.0' } }, null, 2),
+      )
+      git(['add', '-A'], root)
+      git(['commit', '-q', '-m', 'add an optionalDependency'], root)
+      return checkResult(root, 'no-new-deps', 'HEAD~1').ok === false
+    },
+  },
+  {
+    name: '回帰防止: peerDependenciesへの新規追加もproduction dependencyとして扱う',
+    expect: () => {
+      // npm 7以降はpeerDependenciesも既定でインストールする
+      // (peerDependenciesMetaでoptional:trueとマークされたものを除く)。
+      const root = setupTempProject(join(FIXTURES, 'pass'))
+      writeFileSync(
+        join(root, 'package.json'),
+        JSON.stringify({ name: 'x', peerDependencies: { 'left-pad': '1.0.0' } }, null, 2),
+      )
+      git(['add', '-A'], root)
+      git(['commit', '-q', '-m', 'add a peerDependency'], root)
+      return checkResult(root, 'no-new-deps', 'HEAD~1').ok === false
+    },
+  },
+  {
+    name: '回帰防止: peerDependenciesMetaでoptional指定されたpeerは既定インストールされないため対象外',
+    expect: () => {
+      const root = setupTempProject(join(FIXTURES, 'pass'))
+      writeFileSync(
+        join(root, 'package.json'),
+        JSON.stringify({
+          name: 'x',
+          peerDependencies: { 'left-pad': '1.0.0' },
+          peerDependenciesMeta: { 'left-pad': { optional: true } },
+        }, null, 2),
+      )
+      git(['add', '-A'], root)
+      git(['commit', '-q', '-m', 'add an optional peerDependency'], root)
+      return checkResult(root, 'no-new-deps', 'HEAD~1').ok === true
+    },
+  },
+  {
     name: 'guard.config.json: entrance-count が sourceRoot/entranceDirs の上書きを反映する',
     expect: () => {
       // app/routes/ に2件、FEATURES.md の承認+入口ありは1件 → guard.config.json を
@@ -193,6 +307,394 @@ const cases = [
       git(['commit', '-q', '-m', 'add package.json with a dependency'], root)
       return checkResult(root, 'no-new-deps', 'HEAD~1').ok === false
     },
+  },
+  {
+    name: 'dependencyPolicy=DEV_ONLY（既定）: 新規devDependencyは許可する',
+    expect: () => {
+      const root = setupTempProject(join(FIXTURES, 'pass'))
+      writeFileSync(
+        join(root, 'package.json'),
+        JSON.stringify({ name: 'x', devDependencies: { vitest: '1.0.0' } }, null, 2),
+      )
+      git(['add', '-A'], root)
+      git(['commit', '-q', '-m', 'add devDependency'], root)
+      return checkResult(root, 'no-new-deps', 'HEAD~1').ok === true
+    },
+  },
+  {
+    name: 'dependencyPolicy=DEV_ONLY（既定）: 新規production dependencyとdevDependencyが混在してもproduction側で失敗する',
+    expect: () => {
+      const root = setupTempProject(join(FIXTURES, 'pass'))
+      writeFileSync(
+        join(root, 'package.json'),
+        JSON.stringify({ name: 'x', dependencies: { 'left-pad': '1.0.0' }, devDependencies: { vitest: '1.0.0' } }, null, 2),
+      )
+      git(['add', '-A'], root)
+      git(['commit', '-q', '-m', 'add mixed dependencies'], root)
+      const result = checkResult(root, 'no-new-deps', 'HEAD~1')
+      return result.ok === false && result.messages.some((m) => m.includes('left-pad')) && result.messages.some((m) => m.includes('vitest'))
+    },
+  },
+  {
+    name: 'dependencyPolicy=NONE: guard.config.json で指定すると新規devDependencyも禁止する',
+    expect: () => {
+      const root = setupTempProject(join(FIXTURES, 'pass'))
+      setDependencyPolicy(root, { mode: 'NONE' })
+      writeFileSync(
+        join(root, 'package.json'),
+        JSON.stringify({ name: 'x', devDependencies: { vitest: '1.0.0' } }, null, 2),
+      )
+      git(['add', '-A'], root)
+      git(['commit', '-q', '-m', 'add devDependency under NONE policy'], root)
+      return checkResult(root, 'no-new-deps', 'HEAD~1').ok === false
+    },
+  },
+  {
+    name: 'dependencyPolicy=ALLOWLIST: 許可リスト外の新規依存を禁止する',
+    expect: () => {
+      const root = setupTempProject(join(FIXTURES, 'pass'))
+      setDependencyPolicy(root, { mode: 'ALLOWLIST', allowlist: ['left-pad'] })
+      writeFileSync(
+        join(root, 'package.json'),
+        JSON.stringify({ name: 'x', dependencies: { 'not-allowed-pkg': '1.0.0' } }, null, 2),
+      )
+      git(['add', '-A'], root)
+      git(['commit', '-q', '-m', 'add a non-listed dependency'], root)
+      return checkResult(root, 'no-new-deps', 'HEAD~1').ok === false
+    },
+  },
+  {
+    name: 'dependencyPolicy=ALLOWLIST: 許可リスト内の新規依存は通す',
+    expect: () => {
+      const root = setupTempProject(join(FIXTURES, 'pass'))
+      setDependencyPolicy(root, { mode: 'ALLOWLIST', allowlist: ['left-pad'] })
+      writeFileSync(
+        join(root, 'package.json'),
+        JSON.stringify({ name: 'x', dependencies: { 'left-pad': '1.0.0' } }, null, 2),
+      )
+      git(['add', '-A'], root)
+      git(['commit', '-q', '-m', 'add a listed dependency'], root)
+      return checkResult(root, 'no-new-deps', 'HEAD~1').ok === true
+    },
+  },
+  {
+    name: 'dependencyPolicy=REVIEW_PRODUCTION: 新規production dependencyをブロックせずseverity:advisoryで報告する',
+    expect: () => {
+      const root = setupTempProject(join(FIXTURES, 'pass'))
+      setDependencyPolicy(root, { mode: 'REVIEW_PRODUCTION' })
+      writeFileSync(
+        join(root, 'package.json'),
+        JSON.stringify({ name: 'x', dependencies: { 'left-pad': '1.0.0' } }, null, 2),
+      )
+      git(['add', '-A'], root)
+      git(['commit', '-q', '-m', 'add a production dependency'], root)
+      const result = checkResult(root, 'no-new-deps', 'HEAD~1')
+      return result.ok === true && result.severity === 'advisory'
+    },
+  },
+  {
+    name: 'dependencyPolicy=OPEN: 新規依存を無条件に許可する',
+    expect: () => {
+      const root = setupTempProject(join(FIXTURES, 'pass'))
+      setDependencyPolicy(root, { mode: 'OPEN' })
+      writeFileSync(
+        join(root, 'package.json'),
+        JSON.stringify({ name: 'x', dependencies: { 'left-pad': '1.0.0' } }, null, 2),
+      )
+      git(['add', '-A'], root)
+      git(['commit', '-q', '-m', 'add a production dependency'], root)
+      return checkResult(root, 'no-new-deps', 'HEAD~1').ok === true
+    },
+  },
+  {
+    name: 'no-new-deps: 未知のdependencyPolicy.modeは既定へ黙って逃げず違反として報告する',
+    expect: () => {
+      const root = setupTempProject(join(FIXTURES, 'pass'))
+      setDependencyPolicy(root, { mode: 'NOEN' })
+      writeFileSync(
+        join(root, 'package.json'),
+        JSON.stringify({ name: 'x', devDependencies: { vitest: '1.0.0' } }, null, 2),
+      )
+      git(['add', '-A'], root)
+      git(['commit', '-q', '-m', 'add devDependency under a misspelled mode'], root)
+      const result = checkResult(root, 'no-new-deps', 'HEAD~1')
+      return result.ok === false && result.messages.some((m) => m.includes('NOEN'))
+    },
+  },
+  {
+    name: '回帰防止: dependencyPolicyがオブジェクトでない場合（例: 文字列）は既定へ黙って逃げず違反として報告する',
+    expect: () => {
+      // { ...DEFAULTS, ...value } はvalueが文字列や配列でもスプレッド自体は
+      // 例外を投げず、単にmodeを上書きしないまま黙ってDEV_ONLYへフォールバック
+      // してしまう。"dependencyPolicy": "NONE" のような書き間違いを、意図した
+      // NONEではなく既定のDEV_ONLYとして黙って解釈しないことを確認する。
+      const root = setupTempProject(join(FIXTURES, 'pass'))
+      setDependencyPolicy(root, 'NONE')
+      writeFileSync(
+        join(root, 'package.json'),
+        JSON.stringify({ name: 'x', devDependencies: { vitest: '1.0.0' } }, null, 2),
+      )
+      git(['add', '-A'], root)
+      git(['commit', '-q', '-m', 'add devDependency under a scalar dependencyPolicy value'], root)
+      const result = checkResult(root, 'no-new-deps', 'HEAD~1')
+      return result.ok === false && result.messages.some((m) => m.includes('dependencyPolicy'))
+    },
+  },
+  {
+    name: '回帰防止: guard.config.json のトップレベルが配列やスカラーの場合も既定へ黙って逃げず違反として報告する',
+    expect: () => {
+      // parsed.dependencyPolicy は、parsedが配列やスカラーの場合はそもそも
+      // undefinedになる（配列に.dependencyPolicyというプロパティはない）。
+      // dependencyPolicy自体の形だけでなく、guard.config.jsonのトップレベル
+      // 自体がオブジェクトであることも検証する。
+      const root = setupTempProject(join(FIXTURES, 'pass'))
+      writeFileSync(join(root, 'guard.config.json'), JSON.stringify([{ dependencyPolicy: { mode: 'NONE' } }]))
+      git(['add', '-A'], root)
+      git(['commit', '-q', '-m', 'wrap guard.config.json in a top-level array'], root)
+      writeFileSync(
+        join(root, 'package.json'),
+        JSON.stringify({ name: 'x', devDependencies: { vitest: '1.0.0' } }, null, 2),
+      )
+      git(['add', '-A'], root)
+      git(['commit', '-q', '-m', 'add devDependency under an array-wrapped guard.config.json'], root)
+      const result = checkResult(root, 'no-new-deps', 'HEAD~1')
+      return result.ok === false && result.messages.some((m) => m.includes('guard.config.json'))
+    },
+  },
+  {
+    name: '回帰防止: base時点のdependencyPolicyが壊れていても、依存を追加しないPR（設定を直すだけのPR含む）はブロックしない',
+    expect: () => {
+      // base(=HEAD~1)が壊れたdependencyPolicyを持っていても、そのPRが
+      // 依存を1件も追加していないなら、ポリシーを検証する必要自体がない。
+      // これにより「壊れた設定を直すだけのPR」がその設定の壊れっぷりを
+      // 理由にブロックされる、という直せないデッドロックを防ぐ。
+      const root = setupTempProject(join(FIXTURES, 'pass'))
+      setDependencyPolicy(root, 'NONE')
+      // 依存は追加せず、guard.config.jsonを正しい形に直すだけ。
+      setDependencyPolicy(root, { mode: 'NONE' })
+      return checkResult(root, 'no-new-deps', 'HEAD~1').ok === true
+    },
+  },
+  {
+    name: '回帰防止: dependencies⇄devDependencies間の再分類は新規依存として扱わない（NONE/ALLOWLIST）',
+    expect: () => {
+      // left-padをdependenciesからdevDependenciesへ移すだけ（パッケージ自体はbaseに既存）。
+      const rootNone = setupTempProject(join(FIXTURES, 'pass'))
+      writeFileSync(join(rootNone, 'package.json'), JSON.stringify({ name: 'x', dependencies: { 'left-pad': '1.0.0' } }, null, 2))
+      git(['add', '-A'], rootNone)
+      git(['commit', '-q', '-m', 'have left-pad as a production dependency'], rootNone)
+      setDependencyPolicy(rootNone, { mode: 'NONE' })
+      writeFileSync(join(rootNone, 'package.json'), JSON.stringify({ name: 'x', devDependencies: { 'left-pad': '1.0.0' } }, null, 2))
+      git(['add', '-A'], rootNone)
+      git(['commit', '-q', '-m', 'reclassify left-pad as a devDependency'], rootNone)
+      const noneResult = checkResult(rootNone, 'no-new-deps', 'HEAD~1')
+
+      const rootAllowlist = setupTempProject(join(FIXTURES, 'pass'))
+      writeFileSync(join(rootAllowlist, 'package.json'), JSON.stringify({ name: 'x', dependencies: { 'left-pad': '1.0.0' } }, null, 2))
+      git(['add', '-A'], rootAllowlist)
+      git(['commit', '-q', '-m', 'have left-pad as a production dependency'], rootAllowlist)
+      setDependencyPolicy(rootAllowlist, { mode: 'ALLOWLIST', allowlist: [] })
+      writeFileSync(join(rootAllowlist, 'package.json'), JSON.stringify({ name: 'x', devDependencies: { 'left-pad': '1.0.0' } }, null, 2))
+      git(['add', '-A'], rootAllowlist)
+      git(['commit', '-q', '-m', 'reclassify left-pad as a devDependency'], rootAllowlist)
+      const allowlistResult = checkResult(rootAllowlist, 'no-new-deps', 'HEAD~1')
+
+      return noneResult.ok === true && allowlistResult.ok === true
+    },
+  },
+  {
+    name: '回帰防止: no-new-depsは同一コミットでguard.config.jsonを緩めつつ依存を追加する自己参照的なすり抜けを許さない',
+    expect: () => {
+      // ALLOWLISTへ緩める変更と、その緩めた設定でしか通らないはずの依存追加を
+      // "同じコミット"に混ぜた場合、policyはbase（緩める前）から読まれるべきで、
+      // baseにはguard.config.json自体が存在しない＝既定のDEV_ONLYで判定されるため、
+      // production dependencyの新規追加はブロックされ続けるはず。
+      const root = setupTempProject(join(FIXTURES, 'pass'))
+      writeFileSync(
+        join(root, 'guard.config.json'),
+        JSON.stringify({ dependencyPolicy: { mode: 'ALLOWLIST', allowlist: ['left-pad'] } }),
+      )
+      writeFileSync(
+        join(root, 'package.json'),
+        JSON.stringify({ name: 'x', dependencies: { 'left-pad': '1.0.0' } }, null, 2),
+      )
+      git(['add', '-A'], root)
+      git(['commit', '-q', '-m', 'bundle policy loosening with the dependency it permits'], root)
+      return checkResult(root, 'no-new-deps', 'HEAD~1').ok === false
+    },
+  },
+  {
+    name: '回帰防止: dependencyPolicy.allowlistが配列でない場合は不正な設定として拒否する（文字列を1文字ずつのSetにしない）',
+    expect: () => {
+      // パッケージ名を "zod" のままにすると、検証を外してももともと
+      // new Set('zod') = {'z','o','d'} に "zod" という要素は存在しないため
+      // 誤って通っていた場合でも ok:false になり、この壊れ方を検出できない
+      // （Cursor Bugbotの指摘: 有効なリグレッションテストになっていない）。
+      // allowlist文字列を構成する1文字だけのパッケージ名("d")を使うことで、
+      // 「文字列を1文字ずつのSetとして誤って許可してしまう」壊れ方（検証を
+      // 外すと ok:true になってしまう）を実際に検出できるようにする。
+      const root = setupTempProject(join(FIXTURES, 'pass'))
+      setDependencyPolicy(root, { mode: 'ALLOWLIST', allowlist: 'zod' })
+      writeFileSync(
+        join(root, 'package.json'),
+        JSON.stringify({ name: 'x', dependencies: { d: '1.0.0' } }, null, 2),
+      )
+      git(['add', '-A'], root)
+      git(['commit', '-q', '-m', 'add a single-char package matching a character in the malformed string allowlist'], root)
+      return checkResult(root, 'no-new-deps', 'HEAD~1').ok === false
+    },
+  },
+  {
+    name: '回帰防止: no-new-depsは同一コミットでguard.config.jsonを締めつつ、締める前のbaseでしか通らない依存追加を混ぜる逆方向のすり抜けも許さない',
+    expect: () => {
+      // 緩める方向の自己参照（上のテスト）とは逆に、baseがOPENのまま
+      // guard.config.jsonをNONEへ締めるのと同じコミットで、締める前の
+      // OPENでしか通らないはずの依存追加を混ぜた場合。policyをbaseだけから
+      // 読むと、HEADで意図された「これからはNONE」を無視してOPENのまま
+      // 通ってしまう。base/HEAD両方のポリシーを評価し、片方でも禁止するなら
+      // 全体を禁止することで、この逆方向のすり抜けも防ぐ。
+      const root = setupTempProject(join(FIXTURES, 'pass'))
+      setDependencyPolicy(root, { mode: 'OPEN' })
+      writeFileSync(
+        join(root, 'guard.config.json'),
+        JSON.stringify({ dependencyPolicy: { mode: 'NONE' } }),
+      )
+      writeFileSync(
+        join(root, 'package.json'),
+        JSON.stringify({ name: 'x', dependencies: { 'left-pad': '1.0.0' } }, null, 2),
+      )
+      git(['add', '-A'], root)
+      git(['commit', '-q', '-m', 'bundle policy tightening with a dependency only the pre-tightening policy would allow'], root)
+      return checkResult(root, 'no-new-deps', 'HEAD~1').ok === false
+    },
+  },
+  {
+    name: 'runAll: 各結果に category/severity の既定値が付与される（no-ai-default-paletteを除く）',
+    expect: () => {
+      const root = setupTempProject(join(FIXTURES, 'pass'))
+      const results = runAll({ root })
+      return results.every((r) => r.category === 'POLICY_FAILURE')
+        && results.filter((r) => r.name !== 'no-ai-default-palette').every((r) => r.severity === 'blocking')
+        && results.length === CHECKS.length
+    },
+  },
+  {
+    name: 'no-ai-default-palette: 違反時は severity:advisory を返す（CIブロックのok:falseは変えない）',
+    expect: () => {
+      const root = setupTempProject(join(FIXTURES, 'pass'))
+      const cssPath = join(root, 'docs/04-design/tokens.css')
+      const css = readFileSync(cssPath, 'utf8').replace('--radius-s: 4px;', '--radius-s: 0px;').replace(
+        '--radius-m: 8px;',
+        '--radius-m: 0px;',
+      )
+      writeFileSync(cssPath, css)
+      git(['add', '-A'], root)
+      git(['commit', '-q', '-m', 'zero radius'], root)
+      const result = checkResult(root, 'no-ai-default-palette')
+      return result.ok === false && result.severity === 'advisory'
+    },
+  },
+  {
+    name: 'status --json: gatherStatus は project-kernel.json の有無/妥当性を報告する',
+    expect: () => {
+      const withKernel = setupTempProject(join(FIXTURES, 'pass'))
+      writeFileSync(join(withKernel, 'project-kernel.json'), JSON.stringify(VALID_KERNEL_MANIFEST))
+      const okCase = gatherStatus(withKernel)
+
+      const withoutKernel = setupTempProject(join(FIXTURES, 'pass'))
+      const missingCase = gatherStatus(withoutKernel)
+
+      const withBadKernel = setupTempProject(join(FIXTURES, 'pass'))
+      writeFileSync(join(withBadKernel, 'project-kernel.json'), '{ not valid json')
+      const invalidCase = gatherStatus(withBadKernel)
+
+      // パース可能なJSONであっても、pathsやcontextRoutingを欠いていれば
+      // オーケストレーターは何も読み取れず「有効なマニフェスト」とは言えない。
+      // JSON.parseの成否だけをvalidの基準にしない（Codexレビュー指摘）。
+      const withShapelessKernel = setupTempProject(join(FIXTURES, 'pass'))
+      writeFileSync(join(withShapelessKernel, 'project-kernel.json'), '{}')
+      const shapelessCase = gatherStatus(withShapelessKernel)
+
+      return okCase.kernel.exists === true && okCase.kernel.valid === true
+        && missingCase.kernel.exists === false && missingCase.kernel.valid === false
+        && invalidCase.kernel.exists === true && invalidCase.kernel.valid === false
+        && shapelessCase.kernel.exists === true && shapelessCase.kernel.valid === false
+    },
+  },
+  {
+    name: 'status --json: gatherStatus はPHASE.md/ANSWERS.mdの内容を反映する',
+    expect: () => {
+      const root = setupTempProject(join(FIXTURES, 'pass'))
+      const status = gatherStatus(root)
+      return status.phase === 'P3' && typeof status.answers.openCount === 'number' && Array.isArray(status.answers.open)
+    },
+  },
+  {
+    name: 'kernel-manifest-valid: project-kernel.jsonが存在しない場合はスキップする（GPT-templateを必須依存にしない）',
+    expect: () => {
+      const root = setupTempProject(join(FIXTURES, 'pass'))
+      return checkResult(root, 'kernel-manifest-valid').ok === true
+    },
+  },
+  {
+    name: 'kernel-manifest-valid: 存在して有効なら通す',
+    expect: () => {
+      const root = setupTempProject(join(FIXTURES, 'pass'))
+      writeFileSync(join(root, 'project-kernel.json'), JSON.stringify(VALID_KERNEL_MANIFEST))
+      git(['add', '-A'], root)
+      git(['commit', '-q', '-m', 'add a valid project-kernel.json'], root)
+      return checkResult(root, 'kernel-manifest-valid').ok === true
+    },
+  },
+  {
+    name: '回帰防止: kernel-manifest-valid は project-kernel.json が壊れていても npm run guard がグリーンのまま通らないようにする',
+    expect: () => {
+      // CIは npm run guard / npm run guard:selftest しか実行しないため、
+      // status --json だけがkernel.valid:falseを可視化していても、guard自体を
+      // 落とさなければ「必須CIチェックはグリーン」のまま外部オーケストレーターの
+      // 入口が壊れる。壊れたJSON、パース可能だが形が不正なJSONの両方を検出する。
+      const rootBroken = setupTempProject(join(FIXTURES, 'pass'))
+      writeFileSync(join(rootBroken, 'project-kernel.json'), '{ not valid json')
+      git(['add', '-A'], rootBroken)
+      git(['commit', '-q', '-m', 'break project-kernel.json JSON'], rootBroken)
+      const brokenResult = checkResult(rootBroken, 'kernel-manifest-valid')
+
+      const rootShapeless = setupTempProject(join(FIXTURES, 'pass'))
+      writeFileSync(join(rootShapeless, 'project-kernel.json'), '{}')
+      git(['add', '-A'], rootShapeless)
+      git(['commit', '-q', '-m', 'gut project-kernel.json to an empty object'], rootShapeless)
+      const shapelessResult = checkResult(rootShapeless, 'kernel-manifest-valid')
+
+      return brokenResult.ok === false && shapelessResult.ok === false
+    },
+  },
+  {
+    name: 'kernel-manifest-valid契約: isValidKernelManifestはproducer/consumer共通の有効fixtureを通す',
+    expect: () => isValidKernelManifest(VALID_KERNEL_MANIFEST) === true,
+  },
+  ...INVALID_KERNEL_MANIFEST_FIXTURES.map(([label, manifest]) => ({
+    name: `kernel-manifest-valid契約: isValidKernelManifestはproducer/consumer共通の不正fixtureを拒否する(${label})`,
+    expect: () => isValidKernelManifest(manifest) === false,
+  })),
+  {
+    name: 'kernel-manifest-valid契約: governance.maintainerModeが有効な値なら通す(SOLO_MAINTAINER/MULTI_MAINTAINER)',
+    expect: () =>
+      isValidKernelManifest({ ...VALID_KERNEL_MANIFEST, governance: { maintainerMode: 'SOLO_MAINTAINER' } }) === true
+      && isValidKernelManifest({ ...VALID_KERNEL_MANIFEST, governance: { maintainerMode: 'MULTI_MAINTAINER' } }) === true,
+  },
+  {
+    name: 'getMaintainerMode: governanceを持たないマニフェストはMULTI_MAINTAINER（現行の「作成者以外の承認が必要」動作）にフォールバックする',
+    expect: () => getMaintainerMode(VALID_KERNEL_MANIFEST) === 'MULTI_MAINTAINER',
+  },
+  {
+    name: 'getMaintainerMode: 宣言されたmaintainerModeをそのまま返す',
+    expect: () =>
+      getMaintainerMode({ ...VALID_KERNEL_MANIFEST, governance: { maintainerMode: 'SOLO_MAINTAINER' } }) === 'SOLO_MAINTAINER'
+      && getMaintainerMode({ ...VALID_KERNEL_MANIFEST, governance: { maintainerMode: 'MULTI_MAINTAINER' } }) === 'MULTI_MAINTAINER',
+  },
+  {
+    name: 'getMaintainerMode: 未知の値はMULTI_MAINTAINERへ黙って安全側にフォールバックする（isValidKernelManifest自体は別途この値を拒否する）',
+    expect: () => getMaintainerMode({ ...VALID_KERNEL_MANIFEST, governance: { maintainerMode: 'SOLO' } }) === 'MULTI_MAINTAINER',
   },
   {
     name: 'fail/no-ai-default-palette-cream: パターン1（クリーム+セリフ+テラコッタ）を検出する',
@@ -342,14 +844,16 @@ const cases = [
     expect: () => {
       // 存在しないrootを渡すことで、少なくとも一部のチェックが想定外の状態に
       // 直面する状況を作る。ここでの主張は「プロセスがクラッシュせず、
-      // 9件全てについて何らかの結果が返る」ことであり、個々の ok の値は問わない。
+      // 全チェックについて何らかの結果が返る」ことであり、個々の ok の値は問わない。
+      // 件数はCHECKS.lengthから動的に取る（チェックを追加するたびにここを
+      // 手で直さなければならない、というハードコードの罠を避ける）。
       let results
       try {
         results = runAll({ root: '/nonexistent-path-for-selftest-xyz' })
       } catch {
         return false
       }
-      return results.length === 9 && results.every((r) => typeof r.ok === 'boolean')
+      return results.length === CHECKS.length && results.every((r) => typeof r.ok === 'boolean')
     },
   },
 ]
@@ -375,4 +879,6 @@ for (const dir of tempDirs) {
 }
 
 console.log(allPass ? '\n✓ セルフテスト全て通過' : '\n✗ セルフテストに失敗があります')
-process.exit(allPass ? 0 : 1)
+// index.mjsと同じ理由（process.exit()はstdoutのflush前にプロセスを終了させうる）で、
+// exitCodeを設定してスクリプトを自然に終了させる。
+process.exitCode = allPass ? 0 : 1

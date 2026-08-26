@@ -1,0 +1,123 @@
+name: maintainer-approve-command
+
+# governance.maintainerMode = SOLO_MAINTAINER の場合の「明示的な最終承認」を
+# 実装するワークフロー。単なるlabelやコメントの存在だけでは誰でも成立させられて
+# しまうため、以下をすべて満たした場合にだけ、require-human-approval.yml の
+# check-approval ジョブが探している成功済みチェックランを発行する:
+#
+#   1. コメント本文が `/approve-maintainer` と一致する
+#   2. コメント投稿者が、このPRの作成者自身である
+#      （SOLO_MAINTAINERは「PR作成者本人による最終承認」を要求するため、
+#      作成者以外が誤ってこのコマンドを叩いても承認扱いにしない）
+#   3. コメント投稿者が、GitHub自身の記録上このリポジトリのadmin権限を
+#      持っている（project-kernel.json側の宣言では検証しない — その宣言は
+#      このPR自身が書き換えられる内容であり、自己参照的な偽装を防げない。
+#      GitHubのCollaborator Permission APIはPRの中身では変更できない、
+#      唯一のここでの信頼の源）
+#   4. project-kernel.json の governance.maintainerMode が実際に
+#      SOLO_MAINTAINER である（MULTI_MAINTAINERのリポジトリでこのコマンドを
+#      叩いても自己承認は成立しない）
+#
+# 発行するチェックランは check-approval という同じ名前で、その時点のPRの
+# head SHAに束縛される。新しいcommitがpushされるとhead SHAが変わり、この
+# チェックランはもう一致しなくなる（＝失効し、再度 /approve-maintainer が必要）。
+# PRのmergeそのものはこのワークフローからは一切行わない — 行うのは
+# 「maintainerが人間として明示的に確認した」というチェックランの発行だけであり、
+# 実際のmerge操作は引き続き人間の明示的な操作（GitHub UI/API）に委ねる。
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  pull-requests: read
+  checks: write
+  issues: write
+
+jobs:
+  approve:
+    if: github.event.issue.pull_request && github.event.comment.body != null
+    runs-on: ubuntu-latest
+    steps:
+      - name: /approve-maintainer コメントを検証しチェックランを発行する
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo
+            const commentBody = context.payload.comment.body.trim()
+            if (commentBody !== '/approve-maintainer') return
+
+            const commenter = context.payload.comment.user.login
+            const pull_number = context.payload.issue.number
+
+            const { data: pr } = await github.rest.pulls.get({ owner, repo, pull_number })
+            const headSha = pr.head.sha
+
+            async function reply(body) {
+              await github.rest.issues.createComment({ owner, repo, issue_number: pull_number, body })
+            }
+
+            if (commenter !== pr.user.login) {
+              await reply(
+                `@${commenter} SOLO_MAINTAINERモードでは、このPRの作成者本人（@${pr.user.login}）による ` +
+                  '`/approve-maintainer` だけが承認として扱われます。このコメントは承認になりません。',
+              )
+              return
+            }
+
+            let permission
+            try {
+              const { data } = await github.rest.repos.getCollaboratorPermissionLevel({ owner, repo, username: commenter })
+              permission = data.permission
+            } catch {
+              permission = 'none'
+            }
+            if (permission !== 'admin') {
+              await reply(
+                `@${commenter} GitHub上のこのリポジトリに対する権限がadminではないため（現在: ${permission}）、` +
+                  '`/approve-maintainer` を承認として扱えません。',
+              )
+              return
+            }
+
+            let maintainerMode = 'MULTI_MAINTAINER'
+            try {
+              const { data: content } = await github.rest.repos.getContent({ owner, repo, path: 'project-kernel.json', ref: headSha })
+              if (!Array.isArray(content) && content.content) {
+                const parsed = JSON.parse(Buffer.from(content.content, 'base64').toString('utf8'))
+                const mode = parsed?.governance?.maintainerMode
+                if (mode === 'SOLO_MAINTAINER' || mode === 'MULTI_MAINTAINER') maintainerMode = mode
+              }
+            } catch {
+              // project-kernel.json が読めない/不正な場合はMULTI_MAINTAINER側へ倒す
+              // （status.mjs の getMaintainerMode() と同じ既定）。
+            }
+            if (maintainerMode !== 'SOLO_MAINTAINER') {
+              await reply(
+                `@${commenter} このリポジトリは governance.maintainerMode = SOLO_MAINTAINER ではありません` +
+                  '（未指定時はMULTI_MAINTAINER扱いです）。自己承認は成立しません。' +
+                  '別アカウントによる通常のレビュー承認が必要です。',
+              )
+              return
+            }
+
+            await github.rest.checks.create({
+              owner,
+              repo,
+              name: 'check-approval',
+              head_sha: headSha,
+              status: 'completed',
+              conclusion: 'success',
+              output: {
+                title: 'Maintainer approved (SOLO_MAINTAINER)',
+                summary:
+                  `@${commenter} が admin権限で検証済みの \`/approve-maintainer\` により、` +
+                  `commit ${headSha} を明示的に承認しました。新しいcommitがpushされると、この承認は失効します。`,
+              },
+            })
+
+            await reply(
+              `✅ @${commenter} による明示的な承認を commit \`${headSha.slice(0, 12)}\` に記録しました` +
+                '（SOLO_MAINTAINER）。新しいcommitをpushすると再度 `/approve-maintainer` が必要です。',
+            )
