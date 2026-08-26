@@ -318,6 +318,25 @@ const cases = [
     },
   },
   {
+    name: '回帰防止: dependencyPolicyがオブジェクトでない場合（例: 文字列）は既定へ黙って逃げず違反として報告する',
+    expect: () => {
+      // { ...DEFAULTS, ...value } はvalueが文字列や配列でもスプレッド自体は
+      // 例外を投げず、単にmodeを上書きしないまま黙ってDEV_ONLYへフォールバック
+      // してしまう。"dependencyPolicy": "NONE" のような書き間違いを、意図した
+      // NONEではなく既定のDEV_ONLYとして黙って解釈しないことを確認する。
+      const root = setupTempProject(join(FIXTURES, 'pass'))
+      setDependencyPolicy(root, 'NONE')
+      writeFileSync(
+        join(root, 'package.json'),
+        JSON.stringify({ name: 'x', devDependencies: { vitest: '1.0.0' } }, null, 2),
+      )
+      git(['add', '-A'], root)
+      git(['commit', '-q', '-m', 'add devDependency under a scalar dependencyPolicy value'], root)
+      const result = checkResult(root, 'no-new-deps', 'HEAD~1')
+      return result.ok === false && result.messages.some((m) => m.includes('dependencyPolicy'))
+    },
+  },
+  {
     name: '回帰防止: dependencies⇄devDependencies間の再分類は新規依存として扱わない（NONE/ALLOWLIST）',
     expect: () => {
       // left-padをdependenciesからdevDependenciesへ移すだけ（パッケージ自体はbaseに既存）。

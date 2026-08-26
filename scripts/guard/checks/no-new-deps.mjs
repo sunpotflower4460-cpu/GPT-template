@@ -27,6 +27,21 @@ import { DEFAULTS } from '../lib/config.mjs'
 // パース失敗を「依存0件」と区別せず返すための番兵オブジェクト。
 const PARSE_FAILED = Symbol('parse-failed')
 
+function isPlainObject(v) {
+  return typeof v === 'object' && v !== null && !Array.isArray(v)
+}
+
+// dependencyPolicy がスカラー値や配列（例: "dependencyPolicy": "NONE"）の場合、
+// { ...DEFAULTS, ...value } はオブジェクトの mode を上書きせず黙って既定値
+// （DEV_ONLY）へフォールバックしてしまう。スプレッド演算子は文字列・配列も
+// （インデックスをキーとして）受け入れてしまうため、事前にプレーンオブジェクト
+// であることを検証する。
+function assertDependencyPolicyIsObject(parsed, whereForMessage) {
+  if (parsed.dependencyPolicy !== undefined && !isPlainObject(parsed.dependencyPolicy)) {
+    throw new Error(`${whereForMessage} の dependencyPolicy はオブジェクトである必要があります（例: { "mode": "NONE" }）。文字列・配列のままだとmodeが黙って既定値(DEV_ONLY)にフォールバックします。`)
+  }
+}
+
 function loadDependencyPolicyAt(root, ref) {
   let text
   try {
@@ -40,6 +55,7 @@ function loadDependencyPolicyAt(root, ref) {
   } catch (e) {
     throw new Error(`base(${ref})時点の guard.config.json が不正なJSONです: ${e.message}`)
   }
+  assertDependencyPolicyIsObject(parsed, `base(${ref})時点の guard.config.json`)
   return { ...DEFAULTS.dependencyPolicy, ...(parsed.dependencyPolicy ?? {}) }
 }
 
@@ -52,6 +68,7 @@ function loadDependencyPolicyFromWorkingTree(root) {
   } catch (e) {
     throw new Error(`guard.config.json（作業ツリー）が不正なJSONです: ${e.message}`)
   }
+  assertDependencyPolicyIsObject(parsed, 'guard.config.json（作業ツリー）')
   return { ...DEFAULTS.dependencyPolicy, ...(parsed.dependencyPolicy ?? {}) }
 }
 
