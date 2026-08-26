@@ -40,7 +40,9 @@ function answersEntries(root) {
 // JSON.parseが成功しただけでは「有効なマニフェスト」とは言えない（例: `{}` も
 // 有効なJSONだが、paths/contextRoutingを持たず、オーケストレーターはここから
 // 何も読み取れない）。project-kernel.jsonが実際に宣言すべき最小限の形を検証する。
-function isValidKernelManifest(parsed) {
+// scripts/guard/checks/kernel-manifest-valid.mjs からも同じ判定を使うため export する
+// （CIの `npm run guard` と `status --json` とで判定基準がずれないようにする）。
+export function isValidKernelManifest(parsed) {
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return false
   if (typeof parsed.schemaVersion !== 'number') return false
   if (!parsed.paths || typeof parsed.paths !== 'object' || Array.isArray(parsed.paths)) return false
@@ -48,7 +50,7 @@ function isValidKernelManifest(parsed) {
   return true
 }
 
-function kernelManifestHealth(root) {
+export function kernelManifestHealth(root) {
   const path = join(root, 'project-kernel.json')
   if (!existsSync(path)) return { exists: false, valid: false }
   try {

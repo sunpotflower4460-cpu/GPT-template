@@ -10,6 +10,7 @@ import { run as noUnknownBeforeP3 } from './checks/no-unknown-before-p3.mjs'
 import { run as noNewDeps } from './checks/no-new-deps.mjs'
 import { run as noAiDefaultPalette } from './checks/no-ai-default-palette.mjs'
 import { run as craftFormat } from './checks/craft-format.mjs'
+import { run as kernelManifestValid } from './checks/kernel-manifest-valid.mjs'
 
 // features-approved / constraints-sourced / tokens-hardcoded / entrance-count / phase-not-bundled は
 // AGENTS.md の6条ルールに対応する（「ユーザー回答を原文ママで記録する」ルール4だけは、
@@ -34,6 +35,7 @@ export const CHECKS = [
   { name: 'no-new-deps', category: 'POLICY_FAILURE', run: noNewDeps },
   { name: 'no-ai-default-palette', category: 'POLICY_FAILURE', run: noAiDefaultPalette },
   { name: 'craft-format', category: 'POLICY_FAILURE', run: craftFormat },
+  { name: 'kernel-manifest-valid', category: 'POLICY_FAILURE', run: kernelManifestValid },
 ]
 
 // 個々のチェックが例外を投げると、他の全チェックの結果ごと `npm run guard` の

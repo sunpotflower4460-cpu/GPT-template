@@ -337,6 +337,41 @@ const cases = [
     },
   },
   {
+    name: '回帰防止: guard.config.json のトップレベルが配列やスカラーの場合も既定へ黙って逃げず違反として報告する',
+    expect: () => {
+      // parsed.dependencyPolicy は、parsedが配列やスカラーの場合はそもそも
+      // undefinedになる（配列に.dependencyPolicyというプロパティはない）。
+      // dependencyPolicy自体の形だけでなく、guard.config.jsonのトップレベル
+      // 自体がオブジェクトであることも検証する。
+      const root = setupTempProject(join(FIXTURES, 'pass'))
+      writeFileSync(join(root, 'guard.config.json'), JSON.stringify([{ dependencyPolicy: { mode: 'NONE' } }]))
+      git(['add', '-A'], root)
+      git(['commit', '-q', '-m', 'wrap guard.config.json in a top-level array'], root)
+      writeFileSync(
+        join(root, 'package.json'),
+        JSON.stringify({ name: 'x', devDependencies: { vitest: '1.0.0' } }, null, 2),
+      )
+      git(['add', '-A'], root)
+      git(['commit', '-q', '-m', 'add devDependency under an array-wrapped guard.config.json'], root)
+      const result = checkResult(root, 'no-new-deps', 'HEAD~1')
+      return result.ok === false && result.messages.some((m) => m.includes('guard.config.json'))
+    },
+  },
+  {
+    name: '回帰防止: base時点のdependencyPolicyが壊れていても、依存を追加しないPR（設定を直すだけのPR含む）はブロックしない',
+    expect: () => {
+      // base(=HEAD~1)が壊れたdependencyPolicyを持っていても、そのPRが
+      // 依存を1件も追加していないなら、ポリシーを検証する必要自体がない。
+      // これにより「壊れた設定を直すだけのPR」がその設定の壊れっぷりを
+      // 理由にブロックされる、という直せないデッドロックを防ぐ。
+      const root = setupTempProject(join(FIXTURES, 'pass'))
+      setDependencyPolicy(root, 'NONE')
+      // 依存は追加せず、guard.config.jsonを正しい形に直すだけ。
+      setDependencyPolicy(root, { mode: 'NONE' })
+      return checkResult(root, 'no-new-deps', 'HEAD~1').ok === true
+    },
+  },
+  {
     name: '回帰防止: dependencies⇄devDependencies間の再分類は新規依存として扱わない（NONE/ALLOWLIST）',
     expect: () => {
       // left-padをdependenciesからdevDependenciesへ移すだけ（パッケージ自体はbaseに既存）。
@@ -491,6 +526,45 @@ const cases = [
     },
   },
   {
+    name: 'kernel-manifest-valid: project-kernel.jsonが存在しない場合はスキップする（GPT-templateを必須依存にしない）',
+    expect: () => {
+      const root = setupTempProject(join(FIXTURES, 'pass'))
+      return checkResult(root, 'kernel-manifest-valid').ok === true
+    },
+  },
+  {
+    name: 'kernel-manifest-valid: 存在して有効なら通す',
+    expect: () => {
+      const root = setupTempProject(join(FIXTURES, 'pass'))
+      writeFileSync(join(root, 'project-kernel.json'), JSON.stringify({ schemaVersion: 1, paths: {}, contextRouting: {} }))
+      git(['add', '-A'], root)
+      git(['commit', '-q', '-m', 'add a valid project-kernel.json'], root)
+      return checkResult(root, 'kernel-manifest-valid').ok === true
+    },
+  },
+  {
+    name: '回帰防止: kernel-manifest-valid は project-kernel.json が壊れていても npm run guard がグリーンのまま通らないようにする',
+    expect: () => {
+      // CIは npm run guard / npm run guard:selftest しか実行しないため、
+      // status --json だけがkernel.valid:falseを可視化していても、guard自体を
+      // 落とさなければ「必須CIチェックはグリーン」のまま外部オーケストレーターの
+      // 入口が壊れる。壊れたJSON、パース可能だが形が不正なJSONの両方を検出する。
+      const rootBroken = setupTempProject(join(FIXTURES, 'pass'))
+      writeFileSync(join(rootBroken, 'project-kernel.json'), '{ not valid json')
+      git(['add', '-A'], rootBroken)
+      git(['commit', '-q', '-m', 'break project-kernel.json JSON'], rootBroken)
+      const brokenResult = checkResult(rootBroken, 'kernel-manifest-valid')
+
+      const rootShapeless = setupTempProject(join(FIXTURES, 'pass'))
+      writeFileSync(join(rootShapeless, 'project-kernel.json'), '{}')
+      git(['add', '-A'], rootShapeless)
+      git(['commit', '-q', '-m', 'gut project-kernel.json to an empty object'], rootShapeless)
+      const shapelessResult = checkResult(rootShapeless, 'kernel-manifest-valid')
+
+      return brokenResult.ok === false && shapelessResult.ok === false
+    },
+  },
+  {
     name: 'fail/no-ai-default-palette-cream: パターン1（クリーム+セリフ+テラコッタ）を検出する',
     expect: () => {
       const root = setupTempProject(join(FIXTURES, 'fail/no-ai-default-palette-cream'))
@@ -638,14 +712,16 @@ const cases = [
     expect: () => {
       // 存在しないrootを渡すことで、少なくとも一部のチェックが想定外の状態に
       // 直面する状況を作る。ここでの主張は「プロセスがクラッシュせず、
-      // 9件全てについて何らかの結果が返る」ことであり、個々の ok の値は問わない。
+      // 全チェックについて何らかの結果が返る」ことであり、個々の ok の値は問わない。
+      // 件数はCHECKS.lengthから動的に取る（チェックを追加するたびにここを
+      // 手で直さなければならない、というハードコードの罠を避ける）。
       let results
       try {
         results = runAll({ root: '/nonexistent-path-for-selftest-xyz' })
       } catch {
         return false
       }
-      return results.length === 9 && results.every((r) => typeof r.ok === 'boolean')
+      return results.length === CHECKS.length && results.every((r) => typeof r.ok === 'boolean')
     },
   },
 ]

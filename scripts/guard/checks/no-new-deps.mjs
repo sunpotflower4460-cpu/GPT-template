@@ -31,12 +31,18 @@ function isPlainObject(v) {
   return typeof v === 'object' && v !== null && !Array.isArray(v)
 }
 
-// dependencyPolicy がスカラー値や配列（例: "dependencyPolicy": "NONE"）の場合、
-// { ...DEFAULTS, ...value } はオブジェクトの mode を上書きせず黙って既定値
-// （DEV_ONLY）へフォールバックしてしまう。スプレッド演算子は文字列・配列も
-// （インデックスをキーとして）受け入れてしまうため、事前にプレーンオブジェクト
-// であることを検証する。
-function assertDependencyPolicyIsObject(parsed, whereForMessage) {
+// guard.config.json のトップレベルが配列やスカラーの場合（例:
+// [{ "dependencyPolicy": {...} }]）、parsed.dependencyPolicy は単に
+// undefined になる。dependencyPolicy 自体がスカラー値や配列（例:
+// "dependencyPolicy": "NONE"）の場合も、{ ...DEFAULTS, ...value } は
+// オブジェクトの mode を上書きせず黙って既定値（DEV_ONLY）へフォールバック
+// してしまう。スプレッド演算子は文字列・配列も（インデックスをキーとして）
+// 受け入れてしまうため、どちらの階層もプレーンオブジェクトであることを
+// 事前に検証する。
+function assertGuardConfigShape(parsed, whereForMessage) {
+  if (!isPlainObject(parsed)) {
+    throw new Error(`${whereForMessage} はJSONオブジェクト（{ ... }の形）である必要があります。配列やスカラー値だとdependencyPolicyが読み取れず黙って既定値(DEV_ONLY)にフォールバックします。`)
+  }
   if (parsed.dependencyPolicy !== undefined && !isPlainObject(parsed.dependencyPolicy)) {
     throw new Error(`${whereForMessage} の dependencyPolicy はオブジェクトである必要があります（例: { "mode": "NONE" }）。文字列・配列のままだとmodeが黙って既定値(DEV_ONLY)にフォールバックします。`)
   }
@@ -55,7 +61,7 @@ function loadDependencyPolicyAt(root, ref) {
   } catch (e) {
     throw new Error(`base(${ref})時点の guard.config.json が不正なJSONです: ${e.message}`)
   }
-  assertDependencyPolicyIsObject(parsed, `base(${ref})時点の guard.config.json`)
+  assertGuardConfigShape(parsed, `base(${ref})時点の guard.config.json`)
   return { ...DEFAULTS.dependencyPolicy, ...(parsed.dependencyPolicy ?? {}) }
 }
 
@@ -68,7 +74,7 @@ function loadDependencyPolicyFromWorkingTree(root) {
   } catch (e) {
     throw new Error(`guard.config.json（作業ツリー）が不正なJSONです: ${e.message}`)
   }
-  assertDependencyPolicyIsObject(parsed, 'guard.config.json（作業ツリー）')
+  assertGuardConfigShape(parsed, 'guard.config.json（作業ツリー）')
   return { ...DEFAULTS.dependencyPolicy, ...(parsed.dependencyPolicy ?? {}) }
 }
 
@@ -193,24 +199,6 @@ export function run({ root, base }) {
     return { ok: true, messages: [`比較対象 ${resolvedBase} を解決できないためスキップ`] }
   }
 
-  let basePolicyRaw
-  try {
-    basePolicyRaw = loadDependencyPolicyAt(root, resolvedBase)
-  } catch (e) {
-    return { ok: false, messages: [e.message] }
-  }
-  let headPolicyRaw
-  try {
-    headPolicyRaw = loadDependencyPolicyFromWorkingTree(root)
-  } catch (e) {
-    return { ok: false, messages: [e.message] }
-  }
-
-  const baseValidated = validatePolicyShape(basePolicyRaw)
-  if (baseValidated.error) return { ok: false, messages: [baseValidated.error] }
-  const headValidated = validatePolicyShape(headPolicyRaw)
-  if (headValidated.error) return { ok: false, messages: [headValidated.error] }
-
   // base は解決できるが、その時点で package.json 自体が存在しない場合は
   // 「依存0件だった」とみなす（依存を新規追加したまま package.json ごと
   // 追加するケースを見逃さないため、ここではスキップしない）。
@@ -233,6 +221,10 @@ export function run({ root, base }) {
   const addedProd = diffAdded(beforeOk.dependencies, after.dependencies)
   const addedDev = diffAdded(beforeOk.devDependencies, after.devDependencies)
 
+  // 新規に追加された依存が0件なら、ポリシーの読み込み・検証より前にここで
+  // 抜ける。base時点のguard.config.jsonが壊れていても、そのPRが依存を
+  // 追加していない（＝壊れた設定を直すだけのPRである場合を含む）なら
+  // ブロックしない。ポリシーの妥当性は「実際に検証が必要なとき」だけ問う。
   if (addedProd.length === 0 && addedDev.length === 0) {
     return { ok: true, messages: ['新規の依存パッケージはありません'] }
   }
@@ -245,6 +237,24 @@ export function run({ root, base }) {
   const beforeUnion = new Set([...beforeOk.dependencies, ...beforeOk.devDependencies])
   const afterUnion = new Set([...after.dependencies, ...after.devDependencies])
   const trulyNew = [...afterUnion].filter((name) => !beforeUnion.has(name))
+
+  let basePolicyRaw
+  try {
+    basePolicyRaw = loadDependencyPolicyAt(root, resolvedBase)
+  } catch (e) {
+    return { ok: false, messages: [e.message] }
+  }
+  let headPolicyRaw
+  try {
+    headPolicyRaw = loadDependencyPolicyFromWorkingTree(root)
+  } catch (e) {
+    return { ok: false, messages: [e.message] }
+  }
+
+  const baseValidated = validatePolicyShape(basePolicyRaw)
+  if (baseValidated.error) return { ok: false, messages: [baseValidated.error] }
+  const headValidated = validatePolicyShape(headPolicyRaw)
+  if (headValidated.error) return { ok: false, messages: [headValidated.error] }
 
   const diff = { addedProd, addedDev, trulyNew }
   const baseResult = evaluatePolicy(baseValidated.mode, baseValidated.allowlist, diff)
