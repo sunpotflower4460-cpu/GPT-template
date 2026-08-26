@@ -6,6 +6,7 @@
   "scripts": {
     "status": "node scripts/guard/status.mjs",
     "guard": "node scripts/guard/index.mjs",
-    "guard:selftest": "node scripts/guard/selftest.mjs"
+    "guard:selftest": "node scripts/guard/selftest.mjs",
+    "contract:selftest": "node scripts/guard/contract-selftest.mjs"
   }
 }
