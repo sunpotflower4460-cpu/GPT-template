@@ -4,8 +4,9 @@ import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { execFileSync } from 'node:child_process'
-import { runAll } from './index.mjs'
+import { runAll, CHECKS } from './index.mjs'
 import { resolveDefaultBase } from './lib/git-base.mjs'
+import { gatherStatus } from './status.mjs'
 
 // scripts/guard/ の各チェックが「検出すべき違反を実際に検出できるか」を
 // fixtures/ を使って検証するセルフテスト。
@@ -38,6 +39,15 @@ function setupTempProject(fixtureDir) {
 
 function checkResult(root, checkName, base) {
   return runAll({ root, base }).find((r) => r.name === checkName)
+}
+
+// no-new-deps は dependencyPolicy を base commit の guard.config.json から読む
+// （HEAD からは読まない。「同じコミットで緩めて同じコミットで使う」を防ぐため）。
+// そのためテストでも、ポリシー設定は依存追加とは別のコミットにしておく必要がある。
+function setDependencyPolicy(root, dependencyPolicy) {
+  writeFileSync(join(root, 'guard.config.json'), JSON.stringify({ dependencyPolicy }))
+  git(['add', '-A'], root)
+  git(['commit', '-q', '-m', 'set dependencyPolicy'], root)
 }
 
 const cases = [
@@ -192,6 +202,178 @@ const cases = [
       git(['add', '-A'], root)
       git(['commit', '-q', '-m', 'add package.json with a dependency'], root)
       return checkResult(root, 'no-new-deps', 'HEAD~1').ok === false
+    },
+  },
+  {
+    name: 'dependencyPolicy=DEV_ONLY（既定）: 新規devDependencyは許可する',
+    expect: () => {
+      const root = setupTempProject(join(FIXTURES, 'pass'))
+      writeFileSync(
+        join(root, 'package.json'),
+        JSON.stringify({ name: 'x', devDependencies: { vitest: '1.0.0' } }, null, 2),
+      )
+      git(['add', '-A'], root)
+      git(['commit', '-q', '-m', 'add devDependency'], root)
+      return checkResult(root, 'no-new-deps', 'HEAD~1').ok === true
+    },
+  },
+  {
+    name: 'dependencyPolicy=DEV_ONLY（既定）: 新規production dependencyとdevDependencyが混在してもproduction側で失敗する',
+    expect: () => {
+      const root = setupTempProject(join(FIXTURES, 'pass'))
+      writeFileSync(
+        join(root, 'package.json'),
+        JSON.stringify({ name: 'x', dependencies: { 'left-pad': '1.0.0' }, devDependencies: { vitest: '1.0.0' } }, null, 2),
+      )
+      git(['add', '-A'], root)
+      git(['commit', '-q', '-m', 'add mixed dependencies'], root)
+      const result = checkResult(root, 'no-new-deps', 'HEAD~1')
+      return result.ok === false && result.messages.some((m) => m.includes('left-pad')) && result.messages.some((m) => m.includes('vitest'))
+    },
+  },
+  {
+    name: 'dependencyPolicy=NONE: guard.config.json で指定すると新規devDependencyも禁止する',
+    expect: () => {
+      const root = setupTempProject(join(FIXTURES, 'pass'))
+      setDependencyPolicy(root, { mode: 'NONE' })
+      writeFileSync(
+        join(root, 'package.json'),
+        JSON.stringify({ name: 'x', devDependencies: { vitest: '1.0.0' } }, null, 2),
+      )
+      git(['add', '-A'], root)
+      git(['commit', '-q', '-m', 'add devDependency under NONE policy'], root)
+      return checkResult(root, 'no-new-deps', 'HEAD~1').ok === false
+    },
+  },
+  {
+    name: 'dependencyPolicy=ALLOWLIST: 許可リスト外の新規依存を禁止する',
+    expect: () => {
+      const root = setupTempProject(join(FIXTURES, 'pass'))
+      setDependencyPolicy(root, { mode: 'ALLOWLIST', allowlist: ['left-pad'] })
+      writeFileSync(
+        join(root, 'package.json'),
+        JSON.stringify({ name: 'x', dependencies: { 'not-allowed-pkg': '1.0.0' } }, null, 2),
+      )
+      git(['add', '-A'], root)
+      git(['commit', '-q', '-m', 'add a non-listed dependency'], root)
+      return checkResult(root, 'no-new-deps', 'HEAD~1').ok === false
+    },
+  },
+  {
+    name: 'dependencyPolicy=ALLOWLIST: 許可リスト内の新規依存は通す',
+    expect: () => {
+      const root = setupTempProject(join(FIXTURES, 'pass'))
+      setDependencyPolicy(root, { mode: 'ALLOWLIST', allowlist: ['left-pad'] })
+      writeFileSync(
+        join(root, 'package.json'),
+        JSON.stringify({ name: 'x', dependencies: { 'left-pad': '1.0.0' } }, null, 2),
+      )
+      git(['add', '-A'], root)
+      git(['commit', '-q', '-m', 'add a listed dependency'], root)
+      return checkResult(root, 'no-new-deps', 'HEAD~1').ok === true
+    },
+  },
+  {
+    name: 'dependencyPolicy=REVIEW_PRODUCTION: 新規production dependencyをブロックせずseverity:advisoryで報告する',
+    expect: () => {
+      const root = setupTempProject(join(FIXTURES, 'pass'))
+      setDependencyPolicy(root, { mode: 'REVIEW_PRODUCTION' })
+      writeFileSync(
+        join(root, 'package.json'),
+        JSON.stringify({ name: 'x', dependencies: { 'left-pad': '1.0.0' } }, null, 2),
+      )
+      git(['add', '-A'], root)
+      git(['commit', '-q', '-m', 'add a production dependency'], root)
+      const result = checkResult(root, 'no-new-deps', 'HEAD~1')
+      return result.ok === true && result.severity === 'advisory'
+    },
+  },
+  {
+    name: 'dependencyPolicy=OPEN: 新規依存を無条件に許可する',
+    expect: () => {
+      const root = setupTempProject(join(FIXTURES, 'pass'))
+      setDependencyPolicy(root, { mode: 'OPEN' })
+      writeFileSync(
+        join(root, 'package.json'),
+        JSON.stringify({ name: 'x', dependencies: { 'left-pad': '1.0.0' } }, null, 2),
+      )
+      git(['add', '-A'], root)
+      git(['commit', '-q', '-m', 'add a production dependency'], root)
+      return checkResult(root, 'no-new-deps', 'HEAD~1').ok === true
+    },
+  },
+  {
+    name: '回帰防止: no-new-depsは同一コミットでguard.config.jsonを緩めつつ依存を追加する自己参照的なすり抜けを許さない',
+    expect: () => {
+      // ALLOWLISTへ緩める変更と、その緩めた設定でしか通らないはずの依存追加を
+      // "同じコミット"に混ぜた場合、policyはbase（緩める前）から読まれるべきで、
+      // baseにはguard.config.json自体が存在しない＝既定のDEV_ONLYで判定されるため、
+      // production dependencyの新規追加はブロックされ続けるはず。
+      const root = setupTempProject(join(FIXTURES, 'pass'))
+      writeFileSync(
+        join(root, 'guard.config.json'),
+        JSON.stringify({ dependencyPolicy: { mode: 'ALLOWLIST', allowlist: ['left-pad'] } }),
+      )
+      writeFileSync(
+        join(root, 'package.json'),
+        JSON.stringify({ name: 'x', dependencies: { 'left-pad': '1.0.0' } }, null, 2),
+      )
+      git(['add', '-A'], root)
+      git(['commit', '-q', '-m', 'bundle policy loosening with the dependency it permits'], root)
+      return checkResult(root, 'no-new-deps', 'HEAD~1').ok === false
+    },
+  },
+  {
+    name: 'runAll: 各結果に category/severity の既定値が付与される（no-ai-default-paletteを除く）',
+    expect: () => {
+      const root = setupTempProject(join(FIXTURES, 'pass'))
+      const results = runAll({ root })
+      return results.every((r) => r.category === 'POLICY_FAILURE')
+        && results.filter((r) => r.name !== 'no-new-deps').every((r) => r.severity === 'blocking')
+        && results.length === CHECKS.length
+    },
+  },
+  {
+    name: 'no-ai-default-palette: 違反時は severity:advisory を返す（CIブロックのok:falseは変えない）',
+    expect: () => {
+      const root = setupTempProject(join(FIXTURES, 'pass'))
+      const cssPath = join(root, 'docs/04-design/tokens.css')
+      const css = readFileSync(cssPath, 'utf8').replace('--radius-s: 4px;', '--radius-s: 0px;').replace(
+        '--radius-m: 8px;',
+        '--radius-m: 0px;',
+      )
+      writeFileSync(cssPath, css)
+      git(['add', '-A'], root)
+      git(['commit', '-q', '-m', 'zero radius'], root)
+      const result = checkResult(root, 'no-ai-default-palette')
+      return result.ok === false && result.severity === 'advisory'
+    },
+  },
+  {
+    name: 'status --json: gatherStatus は project-kernel.json の有無/妥当性を報告する',
+    expect: () => {
+      const withKernel = setupTempProject(join(FIXTURES, 'pass'))
+      writeFileSync(join(withKernel, 'project-kernel.json'), JSON.stringify({ schemaVersion: 1 }))
+      const okCase = gatherStatus(withKernel)
+
+      const withoutKernel = setupTempProject(join(FIXTURES, 'pass'))
+      const missingCase = gatherStatus(withoutKernel)
+
+      const withBadKernel = setupTempProject(join(FIXTURES, 'pass'))
+      writeFileSync(join(withBadKernel, 'project-kernel.json'), '{ not valid json')
+      const invalidCase = gatherStatus(withBadKernel)
+
+      return okCase.kernel.exists === true && okCase.kernel.valid === true
+        && missingCase.kernel.exists === false && missingCase.kernel.valid === false
+        && invalidCase.kernel.exists === true && invalidCase.kernel.valid === false
+    },
+  },
+  {
+    name: 'status --json: gatherStatus はPHASE.md/ANSWERS.mdの内容を反映する',
+    expect: () => {
+      const root = setupTempProject(join(FIXTURES, 'pass'))
+      const status = gatherStatus(root)
+      return status.phase === 'P3' && typeof status.answers.openCount === 'number' && Array.isArray(status.answers.open)
     },
   },
   {

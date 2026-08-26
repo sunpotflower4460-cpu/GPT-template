@@ -1,28 +1,60 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { git, resolveDefaultBase } from '../lib/git-base.mjs'
+import { DEFAULTS } from '../lib/config.mjs'
 
-// AGENTS.md「5. 実装のルール」: 1PRあたり新規依存は0
+// 依存関係ポリシー: AGENTS.md「依存関係ポリシー」参照。既定は DEV_ONLY
+// （devDependencies は自由、production dependencies は禁止）。
+// guard.config.json の dependencyPolicy でモードを上書きできる。
 // ルートの package.json の dependencies/devDependencies を base と HEAD で比較し、
-// 新規に追加されたパッケージがないかを検証する。
+// 新規に追加されたパッケージがポリシーに違反していないかを検証する。
 // package.json を持たないプロジェクト（他言語スタック）ではスキップする。
 //
 // base を明示しない場合は、直前コミットとの比較ではなく現在のブランチと
 // デフォルトブランチとのマージベースを使う。依存追加だけの小さなコミットを
 // 挟んでおいて実装は別コミットにする、という分割で HEAD~1 比較はすり抜けられて
 // しまうため、同じブランチ（同じPR）内の全コミットをまとめて見る。
+//
+// dependencyPolicy 自体は HEAD ではなく base 時点の guard.config.json から読む。
+// HEAD（現在のファイルシステム）から読んでしまうと、「同じPRでguard.config.jsonを
+// ALLOWLIST/OPENへ緩めつつ、その緩めた設定で自分自身の依存追加を正当化する」という
+// phase-not-bundled が想定しているのと同種の自己参照的なすり抜けが可能になる。
+// ポリシーの変更とそれを使った依存追加は別PR（別コミット、baseより前）にする。
 // パース失敗を「依存0件」と区別せず返すための番兵オブジェクト。
 const PARSE_FAILED = Symbol('parse-failed')
 
-function depNames(pkgJsonText) {
-  if (!pkgJsonText) return new Set()
+function loadDependencyPolicyAt(root, ref) {
+  let text
+  try {
+    text = git(['show', `${ref}:guard.config.json`], root)
+  } catch {
+    return DEFAULTS.dependencyPolicy
+  }
+  let parsed
+  try {
+    parsed = JSON.parse(text)
+  } catch (e) {
+    throw new Error(`base(${ref})時点の guard.config.json が不正なJSONです: ${e.message}`)
+  }
+  return { ...DEFAULTS.dependencyPolicy, ...(parsed.dependencyPolicy ?? {}) }
+}
+
+function depNamesByKind(pkgJsonText) {
+  if (!pkgJsonText) return { dependencies: new Set(), devDependencies: new Set() }
   let pkg
   try {
     pkg = JSON.parse(pkgJsonText)
   } catch {
     return PARSE_FAILED
   }
-  return new Set([...Object.keys(pkg.dependencies ?? {}), ...Object.keys(pkg.devDependencies ?? {})])
+  return {
+    dependencies: new Set(Object.keys(pkg.dependencies ?? {})),
+    devDependencies: new Set(Object.keys(pkg.devDependencies ?? {})),
+  }
+}
+
+function diffAdded(beforeSet, afterSet) {
+  return [...afterSet].filter((name) => !beforeSet.has(name))
 }
 
 export function run({ root, base }) {
@@ -43,6 +75,15 @@ export function run({ root, base }) {
     return { ok: true, messages: [`比較対象 ${resolvedBase} を解決できないためスキップ`] }
   }
 
+  let policy
+  try {
+    policy = loadDependencyPolicyAt(root, resolvedBase)
+  } catch (e) {
+    return { ok: false, messages: [e.message] }
+  }
+  const mode = policy.mode ?? 'DEV_ONLY'
+  const allowlist = new Set(policy.allowlist ?? [])
+
   // base は解決できるが、その時点で package.json 自体が存在しない場合は
   // 「依存0件だった」とみなす（依存を新規追加したまま package.json ごと
   // 追加するケースを見逃さないため、ここではスキップしない）。
@@ -54,20 +95,79 @@ export function run({ root, base }) {
   }
 
   const afterText = readFileSync(pkgPath, 'utf8')
-  const after = depNames(afterText)
+  const after = depNamesByKind(afterText)
   if (after === PARSE_FAILED) {
     return { ok: false, messages: ['package.json が不正なJSONです。依存の追加有無を検証できません。修正してください'] }
   }
 
-  const before = depNames(beforeText)
-  const beforeSet = before === PARSE_FAILED ? new Set() : before
-  const added = [...after].filter((name) => !beforeSet.has(name))
+  const before = depNamesByKind(beforeText)
+  const beforeOk = before === PARSE_FAILED ? { dependencies: new Set(), devDependencies: new Set() } : before
 
-  if (added.length > 0) {
+  const addedProd = diffAdded(beforeOk.dependencies, after.dependencies)
+  const addedDev = diffAdded(beforeOk.devDependencies, after.devDependencies)
+
+  if (addedProd.length === 0 && addedDev.length === 0) {
+    return { ok: true, messages: ['新規の依存パッケージはありません'] }
+  }
+
+  if (mode === 'OPEN') {
+    return { ok: true, messages: [...describeAdded(addedProd, addedDev), 'dependencyPolicy=OPEN のため許可します'] }
+  }
+
+  if (mode === 'ALLOWLIST') {
+    const disallowed = [...addedProd, ...addedDev].filter((name) => !allowlist.has(name))
+    if (disallowed.length > 0) {
+      return {
+        ok: false,
+        messages: [
+          'allowlist にない新規依存パッケージが追加されています（dependencyPolicy=ALLOWLIST）',
+          ...disallowed.map((n) => `  - ${n}`),
+        ],
+      }
+    }
+    return { ok: true, messages: [...describeAdded(addedProd, addedDev), 'すべて allowlist に含まれています'] }
+  }
+
+  if (mode === 'NONE') {
     return {
       ok: false,
-      messages: ['新規の依存パッケージが追加されています（1PRあたり新規依存は0）', ...added.map((n) => `  - ${n}`)],
+      messages: ['新規の依存パッケージが追加されています（dependencyPolicy=NONE: 新規依存は0件）', ...describeAdded(addedProd, addedDev, false)],
     }
   }
-  return { ok: true, messages: ['新規の依存パッケージはありません'] }
+
+  if (mode === 'REVIEW_PRODUCTION') {
+    if (addedProd.length === 0) {
+      return { ok: true, messages: [...describeAdded([], addedDev), 'production dependenciesの新規追加はありません'] }
+    }
+    return {
+      ok: true,
+      severity: 'advisory',
+      messages: [
+        '新規のproduction dependencyが追加されています。ブロックはしませんが人間の確認が必要です（dependencyPolicy=REVIEW_PRODUCTION）',
+        ...addedProd.map((n) => `  - ${n}`),
+        ...(addedDev.length ? ['devDependencies（許可）:', ...addedDev.map((n) => `  - ${n}`)] : []),
+      ],
+    }
+  }
+
+  // DEV_ONLY（既定）: devDependenciesは許可、production dependenciesは禁止。
+  if (addedProd.length > 0) {
+    return {
+      ok: false,
+      messages: [
+        '新規のproduction dependencyが追加されています（dependencyPolicy=DEV_ONLY: devDependencyのみ許可）',
+        ...addedProd.map((n) => `  - ${n}`),
+        ...(addedDev.length ? ['devDependencies（許可）:', ...addedDev.map((n) => `  - ${n}`)] : []),
+      ],
+    }
+  }
+  return { ok: true, messages: [...describeAdded([], addedDev), 'devDependencyのみの追加のため許可します（dependencyPolicy=DEV_ONLY）'] }
+}
+
+function describeAdded(addedProd, addedDev, includeEmpty = true) {
+  const lines = []
+  if (addedProd.length) lines.push('dependencies:', ...addedProd.map((n) => `  - ${n}`))
+  if (addedDev.length) lines.push('devDependencies:', ...addedDev.map((n) => `  - ${n}`))
+  if (lines.length === 0 && includeEmpty) lines.push('新規の依存パッケージはありません')
+  return lines
 }
