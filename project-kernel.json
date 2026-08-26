@@ -28,9 +28,10 @@
     "onDemand": ["answers", "inventory", "questions", "backlog", "craftHowTo", "handoff", "claudeReview", "designBrief"]
   },
   "governance": {
-    "_comment": "P0-P4 in PHASE.md are product-governance gates a human must move through (README.md 「新規プロジェクト開始時の流れ」). Once inside P3, the AI does not need to stop between the runtime activities below — see AGENTS.md 「5. ガバナンスとランタイムの分離」.",
+    "_comment": "P0-P4 in PHASE.md are product-governance gates a human must move through (README.md 「新規プロジェクト開始時の流れ」). Once inside P3, the AI does not need to stop between the runtime activities below — see AGENTS.md 「5. ガバナンスとランタイムの分離」. maintainerMode is unrelated to P0-P4: it tells require-human-approval.yml's check-approval job whether this repo has a second human who can review PRs (MULTI_MAINTAINER, the default when this key is absent — preserves the original 'approval from someone other than the author' behavior) or exactly one maintainer who is also the PR author (SOLO_MAINTAINER — requires an explicit, GitHub-identity-verified /approve-maintainer PR comment from that maintainer instead, never merely opening the PR or a green CI run). AI/bot reviews (Codex, Cursor Bugbot, CodeRabbit, Claude) are evidence for that human decision, never a substitute for it, in either mode.",
     "phases": ["P0", "P1", "P2", "P3", "P4"],
-    "runtimeActivitiesWithinP3": ["INSPECT", "IMPLEMENT", "TEST", "DEBUG", "REVIEW", "REPAIR", "VERIFY"]
+    "runtimeActivitiesWithinP3": ["INSPECT", "IMPLEMENT", "TEST", "DEBUG", "REVIEW", "REPAIR", "VERIFY"],
+    "maintainerMode": "SOLO_MAINTAINER"
   },
   "capabilities": {
     "structuredStatus": true,

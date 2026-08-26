@@ -61,6 +61,15 @@ function isSafeManifestPathValue(value) {
   if (typeof value !== 'string') return false
   const trimmed = value.trim()
   if (!trimmed) return false
+  // NUL文字混入は不正なJSONでは弾けない(JSON文字列としては正当)が、
+  // Node製オーケストレーターがこのパスをfs APIへ渡した瞬間
+  // ERR_INVALID_ARG_VALUEで落ちる。guardはグリーンのまま入口が
+  // 実際には使えない、という壊れ方になるため事前に弾く。
+  // NUL文字混入は不正なJSONでは弾けない(JSON文字列としては正当)が、
+  // Node製オーケストレーターがこのパスをfs APIへ渡した瞬間
+  // ERR_INVALID_ARG_VALUEで落ちる。guardはグリーンのまま入口が
+  // 実際には使えない、という壊れ方になるため事前に弾く。
+  if (trimmed.includes('\0')) return false
   if (trimmed.startsWith('/') || trimmed.includes('\\')) return false
   if (WINDOWS_DRIVE_PATH.test(trimmed)) return false
   if (trimmed.split('/').includes('..')) return false
@@ -155,6 +164,22 @@ function isValidKernelValidation(validation) {
   return validation.strategies.every((strategy) => isValidKernelValidationStrategy(strategy))
 }
 
+const MAINTAINER_MODES = new Set(['SOLO_MAINTAINER', 'MULTI_MAINTAINER'])
+
+// governance自体は任意項目で、既存の phases/runtimeActivitiesWithinP3 等の
+// サブキーは今まで通り自由形式のまま検証しない — ここで新しく検証するのは
+// maintainerMode だけ。存在する場合はSOLO_MAINTAINER/MULTI_MAINTAINERの
+// いずれかでなければならない(曖昧なbooleanではなくenumとして扱う)。
+// 未指定時は consumer側のgetMaintainerMode()と同じくMULTI_MAINTAINER
+// (＝現状の「作成者以外の承認が必要」という挙動)にフォールバックするため、
+// このフィールドを持たない既存リポジトリの挙動は変わらない。
+function isValidKernelGovernance(governance) {
+  if (governance === undefined) return true
+  if (!isPlainObject(governance)) return false
+  if (governance.maintainerMode !== undefined && !MAINTAINER_MODES.has(governance.maintainerMode)) return false
+  return true
+}
+
 // JSON.parseが成功しただけでは「有効なマニフェスト」とは言えない（例: `{}` も
 // 有効なJSONだが、paths/contextRoutingを持たず、オーケストレーターはここから
 // 何も読み取れない）。sunpotflower4460-cpu/GPT-PWA-Superbvisor 側の schema-v1
@@ -162,9 +187,9 @@ function isValidKernelValidation(validation) {
 // いるのと同じ契約まで検証する — producer側(このファイル)がそれより緩いと、この
 // リポジトリのguardはグリーンのまま、consumer側だけがKERNEL_AWAREとして読めず
 // GENERIC_REPOへ黙って落ちる状態を作れてしまう（schemaVersionが1以外の任意の
-// 数値でも通る、kind/capabilities/modes/runtime/validationを検証しない、
-// pathsが空や先頭空白付きの危険パスでも通る、contextRoutingがpathsに存在
-// しないキーを参照していても通る、など）。
+// 数値でも通る、kind/capabilities/modes/runtime/validation/governanceを
+// 検証しない、pathsが空やNUL文字混入・先頭空白付きの危険パスでも通る、
+// contextRoutingがpathsに存在しないキーを参照していても通る、など）。
 // scripts/guard/checks/kernel-manifest-valid.mjs からも同じ判定を使うため export する
 // （CIの `npm run guard` と `status --json` とで判定基準がずれないようにする）。
 export function isValidKernelManifest(parsed) {
@@ -177,7 +202,18 @@ export function isValidKernelManifest(parsed) {
   if (!isValidKernelContextRouting(parsed.contextRouting, parsed.paths)) return false
   if (!isValidKernelRuntime(parsed.runtime)) return false
   if (!isValidKernelValidation(parsed.validation)) return false
+  if (!isValidKernelGovernance(parsed.governance)) return false
   return true
+}
+
+// require-human-approval.yml の check-approval ジョブは project-kernel.json を
+// (チェックアウトせず) GitHub Contents API 経由で読むため、このファイルを
+// そのままimportすることはできず、同じフォールバック規則をワークフロー側にも
+// 書く必要がある。ここが規則の単一の真実の情報源であることを明示するため、
+// このexportをそのミラー実装のリファレンスとして残す。
+export function getMaintainerMode(parsed) {
+  const mode = isPlainObject(parsed) && isPlainObject(parsed.governance) ? parsed.governance.maintainerMode : undefined
+  return MAINTAINER_MODES.has(mode) ? mode : 'MULTI_MAINTAINER'
 }
 
 export function kernelManifestHealth(root) {

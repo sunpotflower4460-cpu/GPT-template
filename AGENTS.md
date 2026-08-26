@@ -50,6 +50,23 @@ INSPECT → IMPLEMENT → TEST → DEBUG → REVIEW → REPAIR → VERIFY
 このリポジトリ自身（`sunpotflower4460-cpu/GPT-template`）に対して、`scripts/guard/**`・この`AGENTS.md`・`project-kernel.json`のスキーマ・`README.md`など、テンプレートの機構そのものを保守・進化させる作業は**maintainer modeとしてP0〜P4ゲートの対象外**とする。consumer向けのP0〜P4（例:「P1でコード禁止」）をテンプレート機構自体の変更に適用すると、テンプレート自身を永久に改修できなくなるため。
 ただし `npm run guard` / `npm run guard:selftest` を通すことはmaintainer modeでも変わらず必須であり、consumer modeより厳格であるべき（テンプレート自身の壊れは、それを使う全プロジェクトに波及する）。どちらのmodeで作業しているかの判断基準はREADME.md「Template自体の開発（maintainer mode）とTemplateを使うプロジェクト（consumer mode）」を参照する。
 
+## PR承認モード: SOLO_MAINTAINER / MULTI_MAINTAINER
+
+上の「maintainer mode」（テンプレート機構自体の変更かどうか）とは**別の概念**である。こちらは `project-kernel.json` の `governance.maintainerMode` が制御する、`.github/workflows/require-human-approval.yml` の `check-approval` チェックの意味そのものを指す。
+
+「作成者以外による人間のレビュー承認」というルールは、複数人がいる前提のリポジトリでは機能するが、solo maintainer（GitHubアカウントが実質1つしかない）リポジトリでは作成者自身しかレビュアーがいないため、正規のフローのまま永久にPRを完了できない。この制約を一時的にバイパスする（checkを無効化する・branch protectionを外す等）のではなく、ガバナンスとして正式に2つのモードをサポートする。
+
+いずれのモードでも共通の最重要原則: **人間以外（Claude/ChatGPT/Codex/Cursor Bugbot/CodeRabbit/Worker/Supervisorなど）は最終承認者になれない。** AI・botのレビューはEvidence（判断材料）であり、最終的なマージ許可は常に人間の明示的な意思決定として扱う。
+
+| governance.maintainerMode | 挙動 |
+|---|---|
+| `MULTI_MAINTAINER`（既定・未指定時のフォールバック） | 従来通り。PR作成者以外による `APPROVED` レビューを要求する |
+| `SOLO_MAINTAINER` | 別アカウントでの承認は要求しない。代わりに、PR作成者本人が `/approve-maintainer` とPRにコメントし、それが GitHub上の実際のCollaborator Permission（`admin`）で検証されたときにだけ、`check-approval` チェックが成功する。PRを作成しただけ・CIがgreenなだけでは承認したことにならない |
+
+`SOLO_MAINTAINER` の承認は現在のhead SHAに束縛される。新しいcommitをpushすると自動的に失効し、再度 `/approve-maintainer` が必要になる（詳細は `maintainer-approve-command.yml` のコメントを参照）。
+
+このリポジトリ自身（`sunpotflower4460-cpu/GPT-template`）は solo maintainer で運用しているため、`project-kernel.json` の `governance.maintainerMode` を `SOLO_MAINTAINER` と宣言している。このテンプレートから作られる新規プロジェクトは、複数人での運用を想定するなら明示的に `MULTI_MAINTAINER` を宣言するか、このキー自体を省略すればよい（省略時は `MULTI_MAINTAINER` として扱われるため、既存プロジェクトの挙動が黙って緩むことはない）。
+
 ## 依存関係ポリシー
 
 新規パッケージの追加可否は `npm run guard` の `no-new-deps` が機械検証する。既定は **DEV_ONLY**（devDependencies は自由、production dependencies の新規追加は禁止）。

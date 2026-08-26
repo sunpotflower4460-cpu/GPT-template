@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url'
 import { execFileSync } from 'node:child_process'
 import { runAll, CHECKS } from './index.mjs'
 import { resolveDefaultBase } from './lib/git-base.mjs'
-import { gatherStatus, isValidKernelManifest } from './status.mjs'
+import { gatherStatus, isValidKernelManifest, getMaintainerMode } from './status.mjs'
 
 // scripts/guard/ の各チェックが「検出すべき違反を実際に検出できるか」を
 // fixtures/ を使って検証するセルフテスト。
@@ -100,6 +100,9 @@ const INVALID_KERNEL_MANIFEST_FIXTURES = [
   ['context-routing-not-object', { schemaVersion: 1, kind: 'ai-project-kernel', paths: { readme: 'README.md' }, capabilities: {}, contextRouting: 'not-an-object' }],
   ['context-routing-inherited-key', { schemaVersion: 1, kind: 'ai-project-kernel', paths: { readme: 'README.md' }, capabilities: {}, contextRouting: { core: ['toString'] } }],
   ['paths-windows-drive-absolute', { schemaVersion: 1, kind: 'ai-project-kernel', paths: { readme: 'C:/Windows/System32/drivers/etc/hosts' }, capabilities: {}, contextRouting: { core: ['readme'] } }],
+  ['paths-null-byte', { schemaVersion: 1, kind: 'ai-project-kernel', paths: { readme: 'README.md\u0000' }, capabilities: {}, contextRouting: { core: ['readme'] } }],
+  ['governance-not-object', { schemaVersion: 1, kind: 'ai-project-kernel', paths: { readme: 'README.md' }, capabilities: {}, contextRouting: { core: ['readme'] }, governance: 'not-an-object' }],
+  ['governance-maintainer-mode-invalid', { schemaVersion: 1, kind: 'ai-project-kernel', paths: { readme: 'README.md' }, capabilities: {}, contextRouting: { core: ['readme'] }, governance: { maintainerMode: 'SOLO' } }],
 ]
 
 const cases = [
@@ -673,6 +676,26 @@ const cases = [
     name: `kernel-manifest-valid契約: isValidKernelManifestはproducer/consumer共通の不正fixtureを拒否する(${label})`,
     expect: () => isValidKernelManifest(manifest) === false,
   })),
+  {
+    name: 'kernel-manifest-valid契約: governance.maintainerModeが有効な値なら通す(SOLO_MAINTAINER/MULTI_MAINTAINER)',
+    expect: () =>
+      isValidKernelManifest({ ...VALID_KERNEL_MANIFEST, governance: { maintainerMode: 'SOLO_MAINTAINER' } }) === true
+      && isValidKernelManifest({ ...VALID_KERNEL_MANIFEST, governance: { maintainerMode: 'MULTI_MAINTAINER' } }) === true,
+  },
+  {
+    name: 'getMaintainerMode: governanceを持たないマニフェストはMULTI_MAINTAINER（現行の「作成者以外の承認が必要」動作）にフォールバックする',
+    expect: () => getMaintainerMode(VALID_KERNEL_MANIFEST) === 'MULTI_MAINTAINER',
+  },
+  {
+    name: 'getMaintainerMode: 宣言されたmaintainerModeをそのまま返す',
+    expect: () =>
+      getMaintainerMode({ ...VALID_KERNEL_MANIFEST, governance: { maintainerMode: 'SOLO_MAINTAINER' } }) === 'SOLO_MAINTAINER'
+      && getMaintainerMode({ ...VALID_KERNEL_MANIFEST, governance: { maintainerMode: 'MULTI_MAINTAINER' } }) === 'MULTI_MAINTAINER',
+  },
+  {
+    name: 'getMaintainerMode: 未知の値はMULTI_MAINTAINERへ黙って安全側にフォールバックする（isValidKernelManifest自体は別途この値を拒否する）',
+    expect: () => getMaintainerMode({ ...VALID_KERNEL_MANIFEST, governance: { maintainerMode: 'SOLO' } }) === 'MULTI_MAINTAINER',
+  },
   {
     name: 'fail/no-ai-default-palette-cream: パターン1（クリーム+セリフ+テラコッタ）を検出する',
     expect: () => {
