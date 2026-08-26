@@ -368,14 +368,21 @@ const cases = [
   {
     name: '回帰防止: dependencyPolicy.allowlistが配列でない場合は不正な設定として拒否する（文字列を1文字ずつのSetにしない）',
     expect: () => {
+      // パッケージ名を "zod" のままにすると、検証を外してももともと
+      // new Set('zod') = {'z','o','d'} に "zod" という要素は存在しないため
+      // 誤って通っていた場合でも ok:false になり、この壊れ方を検出できない
+      // （Cursor Bugbotの指摘: 有効なリグレッションテストになっていない）。
+      // allowlist文字列を構成する1文字だけのパッケージ名("d")を使うことで、
+      // 「文字列を1文字ずつのSetとして誤って許可してしまう」壊れ方（検証を
+      // 外すと ok:true になってしまう）を実際に検出できるようにする。
       const root = setupTempProject(join(FIXTURES, 'pass'))
       setDependencyPolicy(root, { mode: 'ALLOWLIST', allowlist: 'zod' })
       writeFileSync(
         join(root, 'package.json'),
-        JSON.stringify({ name: 'x', dependencies: { zod: '1.0.0' } }, null, 2),
+        JSON.stringify({ name: 'x', dependencies: { d: '1.0.0' } }, null, 2),
       )
       git(['add', '-A'], root)
-      git(['commit', '-q', '-m', 'add zod under a malformed string allowlist'], root)
+      git(['commit', '-q', '-m', 'add a single-char package matching a character in the malformed string allowlist'], root)
       return checkResult(root, 'no-new-deps', 'HEAD~1').ok === false
     },
   },
