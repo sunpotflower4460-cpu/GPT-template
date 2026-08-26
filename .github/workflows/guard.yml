@@ -19,3 +19,4 @@ jobs:
           node-version: 20
       - run: npm run guard
       - run: npm run guard:selftest
+      - run: npm run contract:selftest
