@@ -13,11 +13,8 @@ import { run as craftFormat } from './checks/craft-format.mjs'
 // features-approved / constraints-sourced / tokens-hardcoded / entrance-count / phase-not-bundled は
 // AGENTS.md の6条ルールに対応する（「ユーザー回答を原文ママで記録する」ルール4だけは、
 // 参照できる原文が存在しないため機械的に検証できず対象外）。
-// no-unknown-before-p3 / no-new-deps は、6条とは別にAGENTS.md本文（フェーズ表の注記、
-// 「5. 実装のルール」）で明言されている規範に対応する。
-// no-ai-default-palette / craft-format は craft/situations/traps.md（C-050）と
-// HOW_TO_USE.md の趣旨を、tokens.css が実値で埋まった段階・craft/ 自体が
-// 将来拡張された段階でも機械的に守らせるための追加チェック。
+// no-unknown-before-p3 / no-new-deps はフェーズ/実装ポリシーを補強する。
+// no-ai-default-palette / craft-format はcraft品質ルールを機械的に補強する。
 export const CHECKS = [
   { name: 'features-approved', run: featuresApproved },
   { name: 'constraints-sourced', run: constraintsSourced },
@@ -30,43 +27,83 @@ export const CHECKS = [
   { name: 'craft-format', run: craftFormat },
 ]
 
-// 個々のチェックが例外を投げると、他の全チェックの結果ごと `npm run guard` の
-// プロセス全体が生のスタックトレースで落ちてしまう（実際に phase-not-bundled で
-// 発生した：PHASE.md がdiff範囲内で削除されているとき、想定していない
-// `git show HEAD:PHASE.md` の失敗がそのまま伝播していた）。
-// 各チェックの内部で個別に握り潰すのではなく、ここで一括して受け止め、
-// 1件の想定外の失敗が他のチェックの実行や結果表示を妨げないようにする。
+const CHECK_CATEGORIES = {
+  'features-approved': 'POLICY_FAILURE',
+  'constraints-sourced': 'POLICY_FAILURE',
+  'tokens-hardcoded': 'GUARD_FAILURE',
+  'entrance-count': 'POLICY_FAILURE',
+  'phase-not-bundled': 'POLICY_FAILURE',
+  'no-unknown-before-p3': 'HUMAN_APPROVAL_REQUIRED',
+  'no-new-deps': 'POLICY_FAILURE',
+  'no-ai-default-palette': 'GUARD_FAILURE',
+  'craft-format': 'GUARD_FAILURE',
+}
+
+// 個々のチェックが例外を投げても、他のチェック結果まで失わない。
 export function runAll(opts) {
   return CHECKS.map(({ name, run }) => {
     try {
       return { name, ...run(opts) }
     } catch (e) {
-      return { name, ok: false, messages: [`予期しないエラーで検査を完了できませんでした: ${e.message}`] }
+      return {
+        name,
+        ok: false,
+        messages: [`予期しないエラーで検査を完了できませんでした: ${e instanceof Error ? e.message : String(e)}`],
+      }
     }
   })
 }
 
 function parseArgs(argv) {
-  const args = { root: process.cwd() }
+  const args = { root: process.cwd(), json: false }
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--root') args.root = resolve(argv[++i])
     if (argv[i] === '--base') args.base = argv[++i]
+    if (argv[i] === '--json') args.json = true
   }
   return args
+}
+
+export function buildGuardReport(results) {
+  const checks = results.map(({ name, ok, messages }) => ({
+    id: name,
+    status: ok ? 'passed' : 'failed',
+    ok: Boolean(ok),
+    category: ok ? null : (CHECK_CATEGORIES[name] ?? 'GUARD_FAILURE'),
+    severity: ok ? 'info' : 'error',
+    messages: Array.isArray(messages) ? messages : [],
+  }))
+  const failed = checks.filter((check) => !check.ok)
+  return {
+    schemaVersion: 1,
+    kind: 'project-kernel-guard-report',
+    ok: failed.length === 0,
+    summary: {
+      total: checks.length,
+      passed: checks.length - failed.length,
+      failed: failed.length,
+      failureCategories: [...new Set(failed.map((check) => check.category).filter(Boolean))],
+    },
+    checks,
+  }
 }
 
 function main() {
   const opts = parseArgs(process.argv.slice(2))
   const results = runAll(opts)
+  const report = buildGuardReport(results)
 
-  let allOk = true
+  if (opts.json) {
+    console.log(JSON.stringify(report, null, 2))
+    process.exit(report.ok ? 0 : 1)
+  }
+
   for (const { name, ok, messages } of results) {
     console.log(`\n[${ok ? 'PASS' : 'FAIL'}] ${name}`)
     for (const m of messages) console.log(`  ${m}`)
-    if (!ok) allOk = false
   }
-  console.log(`\n${allOk ? '✓ 全チェック通過' : '✗ 違反があります'}`)
-  process.exit(allOk ? 0 : 1)
+  console.log(`\n${report.ok ? '✓ 全チェック通過' : '✗ 違反があります'}`)
+  process.exit(report.ok ? 0 : 1)
 }
 
 const isMain = process.argv[1] && import.meta.url === `file://${resolve(process.argv[1])}`
