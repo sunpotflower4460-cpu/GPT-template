@@ -57,6 +57,8 @@ function diffAdded(beforeSet, afterSet) {
   return [...afterSet].filter((name) => !beforeSet.has(name))
 }
 
+const KNOWN_MODES = new Set(['NONE', 'DEV_ONLY', 'ALLOWLIST', 'REVIEW_PRODUCTION', 'OPEN'])
+
 export function run({ root, base }) {
   const pkgPath = join(root, 'package.json')
   if (!existsSync(pkgPath)) {
@@ -82,6 +84,12 @@ export function run({ root, base }) {
     return { ok: false, messages: [e.message] }
   }
   const mode = policy.mode ?? 'DEV_ONLY'
+  if (!KNOWN_MODES.has(mode)) {
+    return {
+      ok: false,
+      messages: [`guard.config.json の dependencyPolicy.mode "${mode}" は未知の値です。次のいずれかにしてください: ${[...KNOWN_MODES].join(', ')}`],
+    }
+  }
   const allowlist = new Set(policy.allowlist ?? [])
 
   // base は解決できるが、その時点で package.json 自体が存在しない場合は
@@ -110,12 +118,21 @@ export function run({ root, base }) {
     return { ok: true, messages: ['新規の依存パッケージはありません'] }
   }
 
+  // dependencies⇄devDependencies間の再分類（パッケージ名自体はbase時点で既に
+  // 存在していた）は、addedProd/addedDevの単純な区間比較だけでは「新規追加」に
+  // 見えてしまう。NONE（新規0件）とALLOWLIST（新規名だけを許可リストと照合）は
+  // 「本当にこのプロジェクトに初めて登場した名前か」で判定すべきで、
+  // セクション間の移動それ自体を新規追加として扱わない。
+  const beforeUnion = new Set([...beforeOk.dependencies, ...beforeOk.devDependencies])
+  const afterUnion = new Set([...after.dependencies, ...after.devDependencies])
+  const trulyNew = [...afterUnion].filter((name) => !beforeUnion.has(name))
+
   if (mode === 'OPEN') {
     return { ok: true, messages: [...describeAdded(addedProd, addedDev), 'dependencyPolicy=OPEN のため許可します'] }
   }
 
   if (mode === 'ALLOWLIST') {
-    const disallowed = [...addedProd, ...addedDev].filter((name) => !allowlist.has(name))
+    const disallowed = trulyNew.filter((name) => !allowlist.has(name))
     if (disallowed.length > 0) {
       return {
         ok: false,
@@ -125,13 +142,21 @@ export function run({ root, base }) {
         ],
       }
     }
-    return { ok: true, messages: [...describeAdded(addedProd, addedDev), 'すべて allowlist に含まれています'] }
+    return {
+      ok: true,
+      messages: trulyNew.length
+        ? [`新規パッケージはすべて allowlist に含まれています: ${trulyNew.join(', ')}`]
+        : ['新規の依存パッケージはありません（セクション間の再分類のみ）'],
+    }
   }
 
   if (mode === 'NONE') {
+    if (trulyNew.length === 0) {
+      return { ok: true, messages: ['新規の依存パッケージはありません（セクション間の再分類のみ、dependencyPolicy=NONE）'] }
+    }
     return {
       ok: false,
-      messages: ['新規の依存パッケージが追加されています（dependencyPolicy=NONE: 新規依存は0件）', ...describeAdded(addedProd, addedDev, false)],
+      messages: ['新規の依存パッケージが追加されています（dependencyPolicy=NONE: 新規依存は0件）', ...trulyNew.map((n) => `  - ${n}`)],
     }
   }
 

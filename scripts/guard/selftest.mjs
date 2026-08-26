@@ -303,6 +303,48 @@ const cases = [
     },
   },
   {
+    name: 'no-new-deps: 未知のdependencyPolicy.modeは既定へ黙って逃げず違反として報告する',
+    expect: () => {
+      const root = setupTempProject(join(FIXTURES, 'pass'))
+      setDependencyPolicy(root, { mode: 'NOEN' })
+      writeFileSync(
+        join(root, 'package.json'),
+        JSON.stringify({ name: 'x', devDependencies: { vitest: '1.0.0' } }, null, 2),
+      )
+      git(['add', '-A'], root)
+      git(['commit', '-q', '-m', 'add devDependency under a misspelled mode'], root)
+      const result = checkResult(root, 'no-new-deps', 'HEAD~1')
+      return result.ok === false && result.messages.some((m) => m.includes('NOEN'))
+    },
+  },
+  {
+    name: '回帰防止: dependencies⇄devDependencies間の再分類は新規依存として扱わない（NONE/ALLOWLIST）',
+    expect: () => {
+      // left-padをdependenciesからdevDependenciesへ移すだけ（パッケージ自体はbaseに既存）。
+      const rootNone = setupTempProject(join(FIXTURES, 'pass'))
+      writeFileSync(join(rootNone, 'package.json'), JSON.stringify({ name: 'x', dependencies: { 'left-pad': '1.0.0' } }, null, 2))
+      git(['add', '-A'], rootNone)
+      git(['commit', '-q', '-m', 'have left-pad as a production dependency'], rootNone)
+      setDependencyPolicy(rootNone, { mode: 'NONE' })
+      writeFileSync(join(rootNone, 'package.json'), JSON.stringify({ name: 'x', devDependencies: { 'left-pad': '1.0.0' } }, null, 2))
+      git(['add', '-A'], rootNone)
+      git(['commit', '-q', '-m', 'reclassify left-pad as a devDependency'], rootNone)
+      const noneResult = checkResult(rootNone, 'no-new-deps', 'HEAD~1')
+
+      const rootAllowlist = setupTempProject(join(FIXTURES, 'pass'))
+      writeFileSync(join(rootAllowlist, 'package.json'), JSON.stringify({ name: 'x', dependencies: { 'left-pad': '1.0.0' } }, null, 2))
+      git(['add', '-A'], rootAllowlist)
+      git(['commit', '-q', '-m', 'have left-pad as a production dependency'], rootAllowlist)
+      setDependencyPolicy(rootAllowlist, { mode: 'ALLOWLIST', allowlist: [] })
+      writeFileSync(join(rootAllowlist, 'package.json'), JSON.stringify({ name: 'x', devDependencies: { 'left-pad': '1.0.0' } }, null, 2))
+      git(['add', '-A'], rootAllowlist)
+      git(['commit', '-q', '-m', 'reclassify left-pad as a devDependency'], rootAllowlist)
+      const allowlistResult = checkResult(rootAllowlist, 'no-new-deps', 'HEAD~1')
+
+      return noneResult.ok === true && allowlistResult.ok === true
+    },
+  },
+  {
     name: '回帰防止: no-new-depsは同一コミットでguard.config.jsonを緩めつつ依存を追加する自己参照的なすり抜けを許さない',
     expect: () => {
       // ALLOWLISTへ緩める変更と、その緩めた設定でしか通らないはずの依存追加を

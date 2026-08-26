@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { existsSync, readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { readTable } from './lib/markdown-table.mjs'
 
 // GPT がセッション開始時に状況を素早く把握するための一括表示。
@@ -149,5 +150,8 @@ function main() {
 // index.mjs と同じガード。selftest.mjs が gatherStatus を直接importして検証できる
 // ようにexportした結果、このファイルをimportしただけでmain()（実stdout出力・
 // process.cwd()読み取り）が副作用として走ってしまわないようにする。
-const isMain = process.argv[1] && import.meta.url === `file://${resolve(process.argv[1])}`
+// file://${resolve(...)} を手組みすると、パスに空白や非ASCII文字が含まれる場合に
+// import.meta.url（percent-encodeされる）と食い違い isMain が誤ってfalseになる。
+// pathToFileURL() で同じエンコード規則を通してから比較する。
+const isMain = process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href
 if (isMain) main()

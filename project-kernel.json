@@ -42,8 +42,8 @@
     "mode": "DEV_ONLY"
   },
   "runtime": {
-    "_comment": "statusJson/guardJson use --silent so npm's own banner lines ('> pkg@version script') don't precede the JSON on stdout — without it, output is not valid JSON as-is.",
-    "setup": "npm ci",
+    "_comment": "statusJson/guardJson use --silent so npm's own banner lines ('> pkg@version script') don't precede the JSON on stdout — without it, output is not valid JSON as-is. setup uses `npm install`, not `npm ci`: this repo ships no root lockfile (only refs/ has one, for the reference app), and `npm ci` hard-requires one to exist or it fails with EUSAGE on a fresh checkout.",
+    "setup": "npm install",
     "status": "npm run status",
     "statusJson": "npm run --silent status -- --json",
     "guard": "npm run guard",
@@ -51,9 +51,9 @@
     "selftest": "npm run guard:selftest"
   },
   "validation": {
-    "_comment": "Mirrors .github/workflows/guard.yml as shipped. A consumer project that changes guard.yml to a pull_request-only trigger should update this so an external orchestrator knows it must open a PR before CI can run at all, instead of waiting on a bare branch push that will never get checked.",
+    "_comment": "Mirrors .github/workflows/guard.yml as shipped. The push strategy only runs for the branches listed — guard.yml's push trigger is 'branches: [main]', so a push to any other branch (e.g. a feature branch) does NOT get push validation; only the pull_request strategy applies there. An orchestrator must check `branches` before waiting on a push-triggered check on a non-listed branch, or it will wait forever. A consumer project that changes guard.yml to a pull_request-only trigger should update this so an external orchestrator knows it must open a PR before CI can run at all, instead of waiting on a bare branch push that will never get checked.",
     "strategies": [
-      { "type": "push", "required": true },
+      { "type": "push", "required": true, "branches": ["main"] },
       { "type": "pull_request", "required": true }
     ]
   }

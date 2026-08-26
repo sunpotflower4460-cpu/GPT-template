@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { resolve } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { run as featuresApproved } from './checks/features-approved.mjs'
 import { run as constraintsSourced } from './checks/constraints-sourced.mjs'
 import { run as tokensHardcoded } from './checks/tokens-hardcoded.mjs'
@@ -80,7 +81,11 @@ function main() {
   }
 
   for (const { name, ok, severity, messages } of results) {
-    const label = ok ? 'PASS' : severity === 'advisory' ? 'ADVISORY' : 'FAIL'
+    // severity を先に見る: REVIEW_PRODUCTIONモードでの新規production dependency検出は
+    // ok:true のまま severity:'advisory' を返す(ブロックしないが確認してほしい、の意)。
+    // ok を先に見ると、まさに確認してほしいこのケースだけが [PASS] と表示され、
+    // 目視で見落とされてしまう。
+    const label = severity === 'advisory' ? 'ADVISORY' : ok ? 'PASS' : 'FAIL'
     console.log(`\n[${label}] ${name}`)
     for (const m of messages) console.log(`  ${m}`)
   }
@@ -88,5 +93,8 @@ function main() {
   process.exit(allOk ? 0 : 1)
 }
 
-const isMain = process.argv[1] && import.meta.url === `file://${resolve(process.argv[1])}`
+// file://${resolve(...)} を手組みすると、パスに空白や非ASCII文字が含まれる場合に
+// import.meta.url（percent-encodeされる）と食い違い isMain が誤ってfalseになる。
+// pathToFileURL() で同じエンコード規則を通してから比較する。
+const isMain = process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href
 if (isMain) main()
