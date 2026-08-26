@@ -51,10 +51,22 @@
     "selftest": "npm run guard:selftest"
   },
   "validation": {
-    "_comment": "Mirrors .github/workflows/guard.yml as shipped. The push strategy only runs for the branches listed — guard.yml's push trigger is 'branches: [main]', so a push to any other branch (e.g. a feature branch) does NOT get push validation; only the pull_request strategy applies there. An orchestrator must check `branches` before waiting on a push-triggered check on a non-listed branch, or it will wait forever. A consumer project that changes guard.yml to a pull_request-only trigger should update this so an external orchestrator knows it must open a PR before CI can run at all, instead of waiting on a bare branch push that will never get checked.",
+    "_comment": "Mirrors .github/workflows/guard.yml and require-human-approval.yml as shipped. The push strategy only runs for the branches listed — guard.yml's push trigger is 'branches: [main]', so a push to any other branch (e.g. a feature branch) does NOT get push validation; only the pull_request strategy applies there. An orchestrator must check `branches` before waiting on a push-triggered check on a non-listed branch, or it will wait forever — on a feature branch it must open a PR before CI can run at all, instead of waiting on a bare branch push that will never get checked. Each check's `category` distinguishes what kind of failure it represents: `check-approval` (require-human-approval.yml) always reports a plain GitHub Actions `failure` conclusion when it fails — never `action_required` — so an orchestrator that only trusts `action_required` to mean 'a human must act' will misclassify a missing-approval failure as a code failure and hand it back to an AI for a pointless 'fix'. `guard` failing is a real POLICY_FAILURE/CODE_FAILURE the AI can act on.",
     "strategies": [
-      { "type": "push", "required": true, "branches": ["main"] },
-      { "type": "pull_request", "required": true }
+      {
+        "type": "push",
+        "required": true,
+        "branches": ["main"],
+        "checks": [{ "name": "guard", "category": "GUARD_FAILURE" }]
+      },
+      {
+        "type": "pull_request",
+        "required": true,
+        "checks": [
+          { "name": "guard", "category": "GUARD_FAILURE" },
+          { "name": "check-approval", "category": "HUMAN_APPROVAL_REQUIRED" }
+        ]
+      }
     ]
   }
 }
