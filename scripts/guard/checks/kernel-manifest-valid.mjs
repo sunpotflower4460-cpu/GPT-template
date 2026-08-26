@@ -20,7 +20,7 @@ export function run({ root }) {
     return {
       ok: false,
       messages: [
-        'project-kernel.json が存在しますが不正です（不正なJSON、またはschemaVersion(number)/paths(object)/contextRouting(object)のいずれかを欠いています）。',
+        'project-kernel.json が存在しますが不正です（不正なJSON、またはschemaVersion(=== 1)/kind(=== "ai-project-kernel")/paths(非空オブジェクト、値は安全な相対パス文字列)/capabilities(値がすべてboolean)/contextRouting(各tierがpathsの既存キーを指す文字列配列)のいずれかを満たしていません）。',
         '外部オーケストレーターはこのファイルを宣言された入口として読みに来るため、削除ではなく修正するか、意図的に廃止する場合は project-kernel.json 自体を削除してください（削除すればこのチェックはスキップされます）。',
       ],
     }

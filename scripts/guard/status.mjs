@@ -37,16 +37,73 @@ function answersEntries(root) {
   return content.split(/^### /m).slice(1)
 }
 
+const SUPPORTED_KERNEL_SCHEMA_VERSION = 1
+
+function isPlainObject(value) {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+}
+
+// sunpotflower4460-cpu/GPT-PWA-Superbvisor の worker/src/projectKernel.ts
+// (assertSafeManifestPath) と同じ安全性チェック。
+function isSafeManifestPathValue(value) {
+  if (typeof value !== 'string' || !value.trim()) return false
+  if (value.startsWith('/') || value.includes('\\')) return false
+  if (value.split('/').includes('..')) return false
+  return true
+}
+
+function isValidKernelPaths(paths) {
+  if (!isPlainObject(paths)) return false
+  const entries = Object.entries(paths)
+  if (entries.length === 0) return false
+  return entries.every(([, value]) => isSafeManifestPathValue(value))
+}
+
+function isValidKernelCapabilities(capabilities) {
+  if (!isPlainObject(capabilities)) return false
+  return Object.values(capabilities).every((value) => typeof value === 'boolean')
+}
+
+// contextRouting自体は任意項目（consumer側のTS schema-v1 parserも同様に省略可）。
+// 存在する場合だけ、各tier(core/scoped/onDemand)がpathsのキーを指す文字列配列に
+// なっていることを検証する。ここを飛ばすと、pathsに存在しないキーを参照する
+// contextRoutingでもこのリポジトリのguardはグリーンのまま、consumer側の
+// schema-v1 parserだけが例外を投げてGENERIC_REPOへ落ちる — 外部オーケストレーターが
+// 宣言された入口を失っているのに、producer側のCIは何も気づかないという非対称な
+// 壊れ方になる。
+function isValidKernelContextRouting(contextRouting, paths) {
+  if (contextRouting === undefined) return true
+  if (!isPlainObject(contextRouting)) return false
+  for (const tier of ['core', 'scoped', 'onDemand']) {
+    const items = contextRouting[tier]
+    if (items === undefined) continue
+    if (!Array.isArray(items)) return false
+    for (const pathKey of items) {
+      if (typeof pathKey !== 'string' || !pathKey.trim()) return false
+      if (!(pathKey in paths)) return false
+    }
+  }
+  return true
+}
+
 // JSON.parseが成功しただけでは「有効なマニフェスト」とは言えない（例: `{}` も
 // 有効なJSONだが、paths/contextRoutingを持たず、オーケストレーターはここから
-// 何も読み取れない）。project-kernel.jsonが実際に宣言すべき最小限の形を検証する。
+// 何も読み取れない）。sunpotflower4460-cpu/GPT-PWA-Superbvisor 側の schema-v1
+// parser（worker/src/projectKernel.ts の parseProjectKernel）が実際に要求して
+// いるのと同じ契約まで検証する — producer側(このファイル)がそれより緩いと、この
+// リポジトリのguardはグリーンのまま、consumer側だけがKERNEL_AWAREとして読めず
+// GENERIC_REPOへ黙って落ちる状態を作れてしまう（schemaVersionが1以外の任意の
+// 数値でも通る、kind/capabilitiesを検証しない、pathsが空でも通る、
+// contextRoutingがpathsに存在しないキーを参照していても通る、など）。
 // scripts/guard/checks/kernel-manifest-valid.mjs からも同じ判定を使うため export する
 // （CIの `npm run guard` と `status --json` とで判定基準がずれないようにする）。
 export function isValidKernelManifest(parsed) {
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return false
-  if (typeof parsed.schemaVersion !== 'number') return false
-  if (!parsed.paths || typeof parsed.paths !== 'object' || Array.isArray(parsed.paths)) return false
-  if (!parsed.contextRouting || typeof parsed.contextRouting !== 'object' || Array.isArray(parsed.contextRouting)) return false
+  if (!isPlainObject(parsed)) return false
+  if (parsed.schemaVersion !== SUPPORTED_KERNEL_SCHEMA_VERSION) return false
+  if (parsed.kind !== 'ai-project-kernel') return false
+  if (!isValidKernelPaths(parsed.paths)) return false
+  if (!isValidKernelCapabilities(parsed.capabilities)) return false
+  if (!isValidKernelContextRouting(parsed.contextRouting, parsed.paths)) return false
   return true
 }
 

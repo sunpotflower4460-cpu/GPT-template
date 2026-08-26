@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url'
 import { execFileSync } from 'node:child_process'
 import { runAll, CHECKS } from './index.mjs'
 import { resolveDefaultBase } from './lib/git-base.mjs'
-import { gatherStatus } from './status.mjs'
+import { gatherStatus, isValidKernelManifest } from './status.mjs'
 
 // scripts/guard/ の各チェックが「検出すべき違反を実際に検出できるか」を
 // fixtures/ を使って検証するセルフテスト。
@@ -49,6 +49,43 @@ function setDependencyPolicy(root, dependencyPolicy) {
   git(['add', '-A'], root)
   git(['commit', '-q', '-m', 'set dependencyPolicy'], root)
 }
+
+// このリストは sunpotflower4460-cpu/GPT-PWA-Superbvisor の
+// worker/src/projectKernel.test.ts (INVALID_KERNEL_MANIFEST_FIXTURES) と
+// 意図的に同じ不正パターンを揃えている。producer側(このファイル、
+// isValidKernelManifest())とconsumer側(TSのschema-v1 parser、
+// parseProjectKernel())が同じ入力群に対して同じ判定(有効/無効)をすることを、
+// それぞれのテストスイートから独立に検証するため。どちらか一方だけ直して
+// 契約がずれないよう、この配列を変更したら必ずもう一方の同名リストも
+// 同じ変更内容で追随すること。
+const VALID_KERNEL_MANIFEST = {
+  schemaVersion: 1,
+  kind: 'ai-project-kernel',
+  paths: { readme: 'README.md' },
+  capabilities: {},
+  contextRouting: { core: ['readme'] },
+}
+
+// 各fixtureはVALID_KERNEL_MANIFESTから正確に1項目だけを崩す。旧
+// isValidKernelManifest()はcontextRoutingの「存在」自体を(中身は見ずに)必須
+// としていたため、contextRoutingを省いたfixtureは意図した理由(kind欠落など)
+// とは無関係に「たまたま」旧実装でも拒否されてしまい、新しいチェックを実際には
+// 検証できていなかった。各fixtureに有効なcontextRoutingを含める(対象自体が
+// contextRoutingの場合を除く)ことで、旧実装との比較(git stash等)で「このfixture
+// は新しいチェックが無ければ旧実装を通り抜けていた」ことを1項目ずつ再現できる。
+const INVALID_KERNEL_MANIFEST_FIXTURES = [
+  ['missing-kind', { schemaVersion: 1, paths: { readme: 'README.md' }, capabilities: {}, contextRouting: { core: ['readme'] } }],
+  ['wrong-kind', { schemaVersion: 1, kind: 'something-else', paths: { readme: 'README.md' }, capabilities: {}, contextRouting: { core: ['readme'] } }],
+  ['schema-version-string', { schemaVersion: '1', kind: 'ai-project-kernel', paths: { readme: 'README.md' }, capabilities: {}, contextRouting: { core: ['readme'] } }],
+  ['schema-version-unsupported', { schemaVersion: 2, kind: 'ai-project-kernel', paths: { readme: 'README.md' }, capabilities: {}, contextRouting: { core: ['readme'] } }],
+  ['capabilities-missing', { schemaVersion: 1, kind: 'ai-project-kernel', paths: { readme: 'README.md' }, contextRouting: { core: ['readme'] } }],
+  ['capabilities-non-boolean', { schemaVersion: 1, kind: 'ai-project-kernel', paths: { readme: 'README.md' }, capabilities: { foo: 'yes' }, contextRouting: { core: ['readme'] } }],
+  ['paths-empty', { schemaVersion: 1, kind: 'ai-project-kernel', paths: {}, capabilities: {}, contextRouting: {} }],
+  ['paths-non-string-value', { schemaVersion: 1, kind: 'ai-project-kernel', paths: { readme: 123 }, capabilities: {}, contextRouting: { core: ['readme'] } }],
+  ['paths-unsafe', { schemaVersion: 1, kind: 'ai-project-kernel', paths: { readme: '../escape.md' }, capabilities: {}, contextRouting: { core: ['readme'] } }],
+  ['context-routing-unknown-key', { schemaVersion: 1, kind: 'ai-project-kernel', paths: { readme: 'README.md' }, capabilities: {}, contextRouting: { core: ['missing'] } }],
+  ['context-routing-tier-not-array', { schemaVersion: 1, kind: 'ai-project-kernel', paths: { readme: 'README.md' }, capabilities: {}, contextRouting: { core: 'readme' } }],
+]
 
 const cases = [
   {
@@ -494,7 +531,7 @@ const cases = [
     name: 'status --json: gatherStatus は project-kernel.json の有無/妥当性を報告する',
     expect: () => {
       const withKernel = setupTempProject(join(FIXTURES, 'pass'))
-      writeFileSync(join(withKernel, 'project-kernel.json'), JSON.stringify({ schemaVersion: 1, paths: {}, contextRouting: {} }))
+      writeFileSync(join(withKernel, 'project-kernel.json'), JSON.stringify(VALID_KERNEL_MANIFEST))
       const okCase = gatherStatus(withKernel)
 
       const withoutKernel = setupTempProject(join(FIXTURES, 'pass'))
@@ -536,7 +573,7 @@ const cases = [
     name: 'kernel-manifest-valid: 存在して有効なら通す',
     expect: () => {
       const root = setupTempProject(join(FIXTURES, 'pass'))
-      writeFileSync(join(root, 'project-kernel.json'), JSON.stringify({ schemaVersion: 1, paths: {}, contextRouting: {} }))
+      writeFileSync(join(root, 'project-kernel.json'), JSON.stringify(VALID_KERNEL_MANIFEST))
       git(['add', '-A'], root)
       git(['commit', '-q', '-m', 'add a valid project-kernel.json'], root)
       return checkResult(root, 'kernel-manifest-valid').ok === true
@@ -564,6 +601,14 @@ const cases = [
       return brokenResult.ok === false && shapelessResult.ok === false
     },
   },
+  {
+    name: 'kernel-manifest-valid契約: isValidKernelManifestはproducer/consumer共通の有効fixtureを通す',
+    expect: () => isValidKernelManifest(VALID_KERNEL_MANIFEST) === true,
+  },
+  ...INVALID_KERNEL_MANIFEST_FIXTURES.map(([label, manifest]) => ({
+    name: `kernel-manifest-valid契約: isValidKernelManifestはproducer/consumer共通の不正fixtureを拒否する(${label})`,
+    expect: () => isValidKernelManifest(manifest) === false,
+  })),
   {
     name: 'fail/no-ai-default-palette-cream: パターン1（クリーム+セリフ+テラコッタ）を検出する',
     expect: () => {
