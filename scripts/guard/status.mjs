@@ -43,12 +43,21 @@ function isPlainObject(value) {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
 }
 
+function isNonEmptyTrimmedString(value) {
+  return typeof value === 'string' && value.trim().length > 0
+}
+
 // sunpotflower4460-cpu/GPT-PWA-Superbvisor の worker/src/projectKernel.ts
-// (assertSafeManifestPath) と同じ安全性チェック。
+// (assertSafeManifestPath) と同じ安全性チェック。TS側はparseStringRecordで
+// 値をtrimしてからassertSafeManifestPathへ渡すため、こちらもtrim後の値に
+// 対して判定する — でないと " /absolute.md" や " ../escape.md" のような
+// 先頭空白付きの危険パスを、starts With('/')等の判定がすり抜けてしまう。
 function isSafeManifestPathValue(value) {
-  if (typeof value !== 'string' || !value.trim()) return false
-  if (value.startsWith('/') || value.includes('\\')) return false
-  if (value.split('/').includes('..')) return false
+  if (typeof value !== 'string') return false
+  const trimmed = value.trim()
+  if (!trimmed) return false
+  if (trimmed.startsWith('/') || trimmed.includes('\\')) return false
+  if (trimmed.split('/').includes('..')) return false
   return true
 }
 
@@ -70,7 +79,8 @@ function isValidKernelCapabilities(capabilities) {
 // contextRoutingでもこのリポジトリのguardはグリーンのまま、consumer側の
 // schema-v1 parserだけが例外を投げてGENERIC_REPOへ落ちる — 外部オーケストレーターが
 // 宣言された入口を失っているのに、producer側のCIは何も気づかないという非対称な
-// 壊れ方になる。
+// 壊れ方になる。TS側はparseStringArrayで各キーをtrimしてからpaths参照を
+// 引くため、こちらもtrim後の値でpaths参照を引く。
 function isValidKernelContextRouting(contextRouting, paths) {
   if (contextRouting === undefined) return true
   if (!isPlainObject(contextRouting)) return false
@@ -79,11 +89,50 @@ function isValidKernelContextRouting(contextRouting, paths) {
     if (items === undefined) continue
     if (!Array.isArray(items)) return false
     for (const pathKey of items) {
-      if (typeof pathKey !== 'string' || !pathKey.trim()) return false
-      if (!(pathKey in paths)) return false
+      if (!isNonEmptyTrimmedString(pathKey)) return false
+      if (!(pathKey.trim() in paths)) return false
     }
   }
   return true
+}
+
+// runtime自体は任意項目（TS側も同様に省略可）。存在する場合は、値がすべて
+// non-emptyな文字列のオブジェクトであることを検証する
+// （consumer側のparseStringRecord(value.runtime, 'runtime', false)と同じ契約）。
+function isValidKernelRuntime(runtime) {
+  if (runtime === undefined) return true
+  if (!isPlainObject(runtime)) return false
+  return Object.values(runtime).every((value) => isNonEmptyTrimmedString(value))
+}
+
+const VALIDATION_STRATEGY_TYPES = new Set(['push', 'pull_request', 'workflow_dispatch'])
+
+function isValidStringArray(value) {
+  return Array.isArray(value) && value.every((item) => isNonEmptyTrimmedString(item))
+}
+
+// consumer側のparseValidationStrategy()と同じ契約。checks[].categoryは
+// TS側も型が違えば単に無視するだけで例外を投げない(check.category ??
+// undefinedへフォールバック)ため、ここでも検証しない — 検証すると、
+// consumer側では受理される入力をproducer側だけが拒否する逆方向の非対称が
+// 生まれてしまう。
+function isValidKernelValidationStrategy(strategy) {
+  if (!isPlainObject(strategy)) return false
+  if (typeof strategy.type !== 'string' || !VALIDATION_STRATEGY_TYPES.has(strategy.type)) return false
+  if (strategy.required !== undefined && typeof strategy.required !== 'boolean') return false
+  if (strategy.branches !== undefined && !isValidStringArray(strategy.branches)) return false
+  const checks = strategy.checks ?? []
+  if (!Array.isArray(checks)) return false
+  return checks.every((check) => isPlainObject(check) && isNonEmptyTrimmedString(check.name))
+}
+
+// validation自体は任意項目（TS側も同様に省略可）。存在する場合は
+// strategiesが配列であること、各strategyがconsumer側のparseValidationStrategy()
+// と同じ形であることを検証する。
+function isValidKernelValidation(validation) {
+  if (validation === undefined) return true
+  if (!isPlainObject(validation) || !Array.isArray(validation.strategies)) return false
+  return validation.strategies.every((strategy) => isValidKernelValidationStrategy(strategy))
 }
 
 // JSON.parseが成功しただけでは「有効なマニフェスト」とは言えない（例: `{}` も
@@ -93,8 +142,9 @@ function isValidKernelContextRouting(contextRouting, paths) {
 // いるのと同じ契約まで検証する — producer側(このファイル)がそれより緩いと、この
 // リポジトリのguardはグリーンのまま、consumer側だけがKERNEL_AWAREとして読めず
 // GENERIC_REPOへ黙って落ちる状態を作れてしまう（schemaVersionが1以外の任意の
-// 数値でも通る、kind/capabilitiesを検証しない、pathsが空でも通る、
-// contextRoutingがpathsに存在しないキーを参照していても通る、など）。
+// 数値でも通る、kind/capabilities/runtime/validationを検証しない、pathsが
+// 空や先頭空白付きの危険パスでも通る、contextRoutingがpathsに存在しないキーを
+// 参照していても通る、など）。
 // scripts/guard/checks/kernel-manifest-valid.mjs からも同じ判定を使うため export する
 // （CIの `npm run guard` と `status --json` とで判定基準がずれないようにする）。
 export function isValidKernelManifest(parsed) {
@@ -104,6 +154,8 @@ export function isValidKernelManifest(parsed) {
   if (!isValidKernelPaths(parsed.paths)) return false
   if (!isValidKernelCapabilities(parsed.capabilities)) return false
   if (!isValidKernelContextRouting(parsed.contextRouting, parsed.paths)) return false
+  if (!isValidKernelRuntime(parsed.runtime)) return false
+  if (!isValidKernelValidation(parsed.validation)) return false
   return true
 }
 
