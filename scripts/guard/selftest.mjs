@@ -380,6 +380,30 @@ const cases = [
     },
   },
   {
+    name: '回帰防止: no-new-depsは同一コミットでguard.config.jsonを締めつつ、締める前のbaseでしか通らない依存追加を混ぜる逆方向のすり抜けも許さない',
+    expect: () => {
+      // 緩める方向の自己参照（上のテスト）とは逆に、baseがOPENのまま
+      // guard.config.jsonをNONEへ締めるのと同じコミットで、締める前の
+      // OPENでしか通らないはずの依存追加を混ぜた場合。policyをbaseだけから
+      // 読むと、HEADで意図された「これからはNONE」を無視してOPENのまま
+      // 通ってしまう。base/HEAD両方のポリシーを評価し、片方でも禁止するなら
+      // 全体を禁止することで、この逆方向のすり抜けも防ぐ。
+      const root = setupTempProject(join(FIXTURES, 'pass'))
+      setDependencyPolicy(root, { mode: 'OPEN' })
+      writeFileSync(
+        join(root, 'guard.config.json'),
+        JSON.stringify({ dependencyPolicy: { mode: 'NONE' } }),
+      )
+      writeFileSync(
+        join(root, 'package.json'),
+        JSON.stringify({ name: 'x', dependencies: { 'left-pad': '1.0.0' } }, null, 2),
+      )
+      git(['add', '-A'], root)
+      git(['commit', '-q', '-m', 'bundle policy tightening with a dependency only the pre-tightening policy would allow'], root)
+      return checkResult(root, 'no-new-deps', 'HEAD~1').ok === false
+    },
+  },
+  {
     name: 'runAll: 各結果に category/severity の既定値が付与される（no-ai-default-paletteを除く）',
     expect: () => {
       const root = setupTempProject(join(FIXTURES, 'pass'))
@@ -409,7 +433,7 @@ const cases = [
     name: 'status --json: gatherStatus は project-kernel.json の有無/妥当性を報告する',
     expect: () => {
       const withKernel = setupTempProject(join(FIXTURES, 'pass'))
-      writeFileSync(join(withKernel, 'project-kernel.json'), JSON.stringify({ schemaVersion: 1 }))
+      writeFileSync(join(withKernel, 'project-kernel.json'), JSON.stringify({ schemaVersion: 1, paths: {}, contextRouting: {} }))
       const okCase = gatherStatus(withKernel)
 
       const withoutKernel = setupTempProject(join(FIXTURES, 'pass'))
@@ -419,9 +443,17 @@ const cases = [
       writeFileSync(join(withBadKernel, 'project-kernel.json'), '{ not valid json')
       const invalidCase = gatherStatus(withBadKernel)
 
+      // パース可能なJSONであっても、pathsやcontextRoutingを欠いていれば
+      // オーケストレーターは何も読み取れず「有効なマニフェスト」とは言えない。
+      // JSON.parseの成否だけをvalidの基準にしない（Codexレビュー指摘）。
+      const withShapelessKernel = setupTempProject(join(FIXTURES, 'pass'))
+      writeFileSync(join(withShapelessKernel, 'project-kernel.json'), '{}')
+      const shapelessCase = gatherStatus(withShapelessKernel)
+
       return okCase.kernel.exists === true && okCase.kernel.valid === true
         && missingCase.kernel.exists === false && missingCase.kernel.valid === false
         && invalidCase.kernel.exists === true && invalidCase.kernel.valid === false
+        && shapelessCase.kernel.exists === true && shapelessCase.kernel.valid === false
     },
   },
   {
@@ -613,4 +645,6 @@ for (const dir of tempDirs) {
 }
 
 console.log(allPass ? '\n✓ セルフテスト全て通過' : '\n✗ セルフテストに失敗があります')
-process.exit(allPass ? 0 : 1)
+// index.mjsと同じ理由（process.exit()はstdoutのflush前にプロセスを終了させうる）で、
+// exitCodeを設定してスクリプトを自然に終了させる。
+process.exitCode = allPass ? 0 : 1

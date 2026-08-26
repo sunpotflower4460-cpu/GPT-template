@@ -37,12 +37,23 @@ function answersEntries(root) {
   return content.split(/^### /m).slice(1)
 }
 
+// JSON.parseが成功しただけでは「有効なマニフェスト」とは言えない（例: `{}` も
+// 有効なJSONだが、paths/contextRoutingを持たず、オーケストレーターはここから
+// 何も読み取れない）。project-kernel.jsonが実際に宣言すべき最小限の形を検証する。
+function isValidKernelManifest(parsed) {
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return false
+  if (typeof parsed.schemaVersion !== 'number') return false
+  if (!parsed.paths || typeof parsed.paths !== 'object' || Array.isArray(parsed.paths)) return false
+  if (!parsed.contextRouting || typeof parsed.contextRouting !== 'object' || Array.isArray(parsed.contextRouting)) return false
+  return true
+}
+
 function kernelManifestHealth(root) {
   const path = join(root, 'project-kernel.json')
   if (!existsSync(path)) return { exists: false, valid: false }
   try {
-    JSON.parse(readFileSync(path, 'utf8'))
-    return { exists: true, valid: true }
+    const parsed = JSON.parse(readFileSync(path, 'utf8'))
+    return { exists: true, valid: isValidKernelManifest(parsed) }
   } catch {
     return { exists: true, valid: false }
   }

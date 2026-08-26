@@ -76,8 +76,14 @@ function main() {
   const allOk = results.every((r) => r.ok)
 
   if (json) {
+    // process.exit()は、pipe側のバッファが埋まっている途中でもプロセスを
+    // 即座に終了させうる（5,000件規模の違反出力で65,536バイト目の文字列途中
+    // で途切れ、パース不能なJSONになることを確認済み）。exitCodeを設定して
+    // 関数を抜けるだけにし、Nodeのイベントループが自然に空になる（＝stdoutが
+    // flushされ切る）のを待ってからプロセスを終了させる。
     console.log(JSON.stringify({ schemaVersion: 1, ok: allOk, checks: results }, null, 2))
-    process.exit(allOk ? 0 : 1)
+    process.exitCode = allOk ? 0 : 1
+    return
   }
 
   for (const { name, ok, severity, messages } of results) {
@@ -90,7 +96,7 @@ function main() {
     for (const m of messages) console.log(`  ${m}`)
   }
   console.log(`\n${allOk ? '✓ 全チェック通過' : '✗ 違反があります'}`)
-  process.exit(allOk ? 0 : 1)
+  process.exitCode = allOk ? 0 : 1
 }
 
 // file://${resolve(...)} を手組みすると、パスに空白や非ASCII文字が含まれる場合に

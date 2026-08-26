@@ -44,6 +44,12 @@ INSPECT → IMPLEMENT → TEST → DEBUG → REVIEW → REPAIR → VERIFY
 
 「実装中に毎回止まる」と「勝手にフェーズを進める」は別の問題であり、混同しない。前者はP3の中で自律的に回してよく、後者はルール5・6で常に禁止する。
 
+### maintainer mode（テンプレート機構自体の変更）
+
+上記のP0〜P4は、**このテンプレートを使って作られた新規プロジェクト**（consumer mode）が従うガバナンスである。
+このリポジトリ自身（`sunpotflower4460-cpu/GPT-template`）に対して、`scripts/guard/**`・この`AGENTS.md`・`project-kernel.json`のスキーマ・`README.md`など、テンプレートの機構そのものを保守・進化させる作業は**maintainer modeとしてP0〜P4ゲートの対象外**とする。consumer向けのP0〜P4（例:「P1でコード禁止」）をテンプレート機構自体の変更に適用すると、テンプレート自身を永久に改修できなくなるため。
+ただし `npm run guard` / `npm run guard:selftest` を通すことはmaintainer modeでも変わらず必須であり、consumer modeより厳格であるべき（テンプレート自身の壊れは、それを使う全プロジェクトに波及する）。どちらのmodeで作業しているかの判断基準はREADME.md「Template自体の開発（maintainer mode）とTemplateを使うプロジェクト（consumer mode）」を参照する。
+
 ## 依存関係ポリシー
 
 新規パッケージの追加可否は `npm run guard` の `no-new-deps` が機械検証する。既定は **DEV_ONLY**（devDependencies は自由、production dependencies の新規追加は禁止）。
