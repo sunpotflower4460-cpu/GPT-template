@@ -90,6 +90,12 @@ export function run({ root, base }) {
       messages: [`guard.config.json の dependencyPolicy.mode "${mode}" は未知の値です。次のいずれかにしてください: ${[...KNOWN_MODES].join(', ')}`],
     }
   }
+  if (policy.allowlist !== undefined && !Array.isArray(policy.allowlist)) {
+    return {
+      ok: false,
+      messages: [`guard.config.json の dependencyPolicy.allowlist は配列である必要があります（例: ["zod"]）。文字列のまま渡すと1文字ずつのSetになり、意図したパッケージ名と一致しません。`],
+    }
+  }
   const allowlist = new Set(policy.allowlist ?? [])
 
   // base は解決できるが、その時点で package.json 自体が存在しない場合は

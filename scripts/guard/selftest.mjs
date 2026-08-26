@@ -366,12 +366,26 @@ const cases = [
     },
   },
   {
+    name: '回帰防止: dependencyPolicy.allowlistが配列でない場合は不正な設定として拒否する（文字列を1文字ずつのSetにしない）',
+    expect: () => {
+      const root = setupTempProject(join(FIXTURES, 'pass'))
+      setDependencyPolicy(root, { mode: 'ALLOWLIST', allowlist: 'zod' })
+      writeFileSync(
+        join(root, 'package.json'),
+        JSON.stringify({ name: 'x', dependencies: { zod: '1.0.0' } }, null, 2),
+      )
+      git(['add', '-A'], root)
+      git(['commit', '-q', '-m', 'add zod under a malformed string allowlist'], root)
+      return checkResult(root, 'no-new-deps', 'HEAD~1').ok === false
+    },
+  },
+  {
     name: 'runAll: 各結果に category/severity の既定値が付与される（no-ai-default-paletteを除く）',
     expect: () => {
       const root = setupTempProject(join(FIXTURES, 'pass'))
       const results = runAll({ root })
       return results.every((r) => r.category === 'POLICY_FAILURE')
-        && results.filter((r) => r.name !== 'no-new-deps').every((r) => r.severity === 'blocking')
+        && results.filter((r) => r.name !== 'no-ai-default-palette').every((r) => r.severity === 'blocking')
         && results.length === CHECKS.length
     },
   },
