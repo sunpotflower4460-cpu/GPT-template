@@ -111,8 +111,21 @@ function depNamesByKind(pkgJsonText) {
   // 既定でインストールする（project-kernel.jsonのruntime.setupは指定していない）。
   // productionのdependenciesと同じ扱いにしないと、optionalDependenciesへ追加する
   // だけでNONE/DEV_ONLY/ALLOWLIST/REVIEW_PRODUCTIONいずれのモードもすり抜けられる。
+  //
+  // npm 7以降はpeerDependenciesも既定でインストールする。ただし
+  // peerDependenciesMeta.<name>.optional: true とマーカーされたpeerだけは
+  // 自動インストールされないため、そのマーカーが無いpeerだけをproductionとして
+  // 数える（マーカー付きのoptional peerまで数えると、逆に本当にoptionalな
+  // peerの追加を過剰にブロックしてしまう）。
+  const peerDependencies = pkg.peerDependencies ?? {}
+  const peerDependenciesMeta = pkg.peerDependenciesMeta ?? {}
+  const requiredPeerNames = Object.keys(peerDependencies).filter((name) => !peerDependenciesMeta[name]?.optional)
   return {
-    dependencies: new Set([...Object.keys(pkg.dependencies ?? {}), ...Object.keys(pkg.optionalDependencies ?? {})]),
+    dependencies: new Set([
+      ...Object.keys(pkg.dependencies ?? {}),
+      ...Object.keys(pkg.optionalDependencies ?? {}),
+      ...requiredPeerNames,
+    ]),
     devDependencies: new Set(Object.keys(pkg.devDependencies ?? {})),
   }
 }

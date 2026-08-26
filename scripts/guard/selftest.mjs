@@ -241,6 +241,38 @@ const cases = [
     },
   },
   {
+    name: '回帰防止: peerDependenciesへの新規追加もproduction dependencyとして扱う',
+    expect: () => {
+      // npm 7以降はpeerDependenciesも既定でインストールする
+      // (peerDependenciesMetaでoptional:trueとマークされたものを除く)。
+      const root = setupTempProject(join(FIXTURES, 'pass'))
+      writeFileSync(
+        join(root, 'package.json'),
+        JSON.stringify({ name: 'x', peerDependencies: { 'left-pad': '1.0.0' } }, null, 2),
+      )
+      git(['add', '-A'], root)
+      git(['commit', '-q', '-m', 'add a peerDependency'], root)
+      return checkResult(root, 'no-new-deps', 'HEAD~1').ok === false
+    },
+  },
+  {
+    name: '回帰防止: peerDependenciesMetaでoptional指定されたpeerは既定インストールされないため対象外',
+    expect: () => {
+      const root = setupTempProject(join(FIXTURES, 'pass'))
+      writeFileSync(
+        join(root, 'package.json'),
+        JSON.stringify({
+          name: 'x',
+          peerDependencies: { 'left-pad': '1.0.0' },
+          peerDependenciesMeta: { 'left-pad': { optional: true } },
+        }, null, 2),
+      )
+      git(['add', '-A'], root)
+      git(['commit', '-q', '-m', 'add an optional peerDependency'], root)
+      return checkResult(root, 'no-new-deps', 'HEAD~1').ok === true
+    },
+  },
+  {
     name: 'guard.config.json: entrance-count が sourceRoot/entranceDirs の上書きを反映する',
     expect: () => {
       // app/routes/ に2件、FEATURES.md の承認+入口ありは1件 → guard.config.json を
