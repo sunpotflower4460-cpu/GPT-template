@@ -1,0 +1,71 @@
+{
+  "schemaVersion": 1,
+  "kind": "ai-project-kernel",
+  "defaultMode": "consumer",
+  "modes": ["consumer", "maintainer"],
+  "paths": {
+    "soul": "docs/00-soul/SOUL.md",
+    "answers": "docs/01-intake/ANSWERS.md",
+    "inventory": "docs/01-intake/INVENTORY.md",
+    "decisions": "docs/02-decisions/DECISIONS.md",
+    "constraints": "docs/02-decisions/CONSTRAINTS.md",
+    "features": "docs/03-scope/FEATURES.md",
+    "backlog": "docs/03-scope/BACKLOG.md",
+    "designJudgments": "docs/04-design/UI_JUDGMENTS.md",
+    "handoff": "docs/05-handoff/HANDOFF.md",
+    "craftIndex": "craft/INDEX.md",
+    "phase": "PHASE.md"
+  },
+  "capabilities": {
+    "structuredStatus": true,
+    "structuredGuard": true,
+    "contextRouting": true,
+    "runtimeContract": true,
+    "validationContract": true
+  },
+  "contextRouting": {
+    "core": [
+      "docs/00-soul/SOUL.md",
+      "docs/02-decisions/CONSTRAINTS.md",
+      "docs/03-scope/FEATURES.md"
+    ],
+    "scoped": [
+      "docs/04-design/UI_JUDGMENTS.md",
+      "craft/INDEX.md"
+    ],
+    "onDemand": [
+      "docs/01-intake/ANSWERS.md",
+      "docs/02-decisions/DECISIONS.md",
+      "docs/03-scope/BACKLOG.md",
+      "docs/05-handoff/HANDOFF.md"
+    ]
+  },
+  "governance": {
+    "phaseFile": "PHASE.md",
+    "phases": ["P0", "P1", "P2", "P3", "P4"],
+    "implementationPhases": ["P3", "P4"],
+    "phaseAuthority": "user",
+    "runtimeActivities": ["INSPECT", "IMPLEMENT", "TEST", "DEBUG", "REVIEW", "REPAIR", "VERIFY"]
+  },
+  "runtime": {
+    "status": "npm run status -- --json",
+    "guard": "npm run guard -- --json",
+    "guardSelftest": "npm run guard:selftest",
+    "contractSelftest": "npm run contract:selftest"
+  },
+  "validation": {
+    "strategies": [
+      {
+        "type": "pull_request",
+        "checks": [
+          { "name": "guard", "category": "GUARD_FAILURE" },
+          { "name": "check-approval", "category": "HUMAN_APPROVAL_REQUIRED" }
+        ]
+      }
+    ]
+  },
+  "dependencyPolicy": {
+    "mode": "NONE",
+    "note": "Current guard behavior remains unchanged in schema v1; policy generalization is a later compatible extension."
+  }
+}
