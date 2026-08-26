@@ -52,11 +52,17 @@ function isNonEmptyTrimmedString(value) {
 // 値をtrimしてからassertSafeManifestPathへ渡すため、こちらもtrim後の値に
 // 対して判定する — でないと " /absolute.md" や " ../escape.md" のような
 // 先頭空白付きの危険パスを、starts With('/')等の判定がすり抜けてしまう。
+// Windowsのドライブ修飾パス（例: "C:/Windows/..."）は "/" で始まらず
+// "\\" も含まないため、上のチェックだけではすり抜ける。それでも
+// Windows上ではリポジトリ外を指す絶対パスになる。
+const WINDOWS_DRIVE_PATH = /^[a-zA-Z]:/
+
 function isSafeManifestPathValue(value) {
   if (typeof value !== 'string') return false
   const trimmed = value.trim()
   if (!trimmed) return false
   if (trimmed.startsWith('/') || trimmed.includes('\\')) return false
+  if (WINDOWS_DRIVE_PATH.test(trimmed)) return false
   if (trimmed.split('/').includes('..')) return false
   return true
 }
@@ -101,7 +107,10 @@ function isValidKernelContextRouting(contextRouting, paths) {
     if (!Array.isArray(items)) return false
     for (const pathKey of items) {
       if (!isNonEmptyTrimmedString(pathKey)) return false
-      if (!(pathKey.trim() in paths)) return false
+      // `in` はObject.prototypeの継承プロパティ(toString/constructor/
+      // __proto__等)にもマッチしてしまうため、pathsに該当キーが無くても
+      // 素通りしてしまう。Object.hasOwnで自身のプロパティだけを見る。
+      if (!Object.hasOwn(paths, pathKey.trim())) return false
     }
   }
   return true

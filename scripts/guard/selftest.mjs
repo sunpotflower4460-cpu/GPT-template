@@ -98,6 +98,8 @@ const INVALID_KERNEL_MANIFEST_FIXTURES = [
   ['modes-non-string-item', { schemaVersion: 1, kind: 'ai-project-kernel', paths: { readme: 'README.md' }, capabilities: {}, contextRouting: { core: ['readme'] }, modes: [123] }],
   ['modes-empty-string-item', { schemaVersion: 1, kind: 'ai-project-kernel', paths: { readme: 'README.md' }, capabilities: {}, contextRouting: { core: ['readme'] }, modes: [''] }],
   ['context-routing-not-object', { schemaVersion: 1, kind: 'ai-project-kernel', paths: { readme: 'README.md' }, capabilities: {}, contextRouting: 'not-an-object' }],
+  ['context-routing-inherited-key', { schemaVersion: 1, kind: 'ai-project-kernel', paths: { readme: 'README.md' }, capabilities: {}, contextRouting: { core: ['toString'] } }],
+  ['paths-windows-drive-absolute', { schemaVersion: 1, kind: 'ai-project-kernel', paths: { readme: 'C:/Windows/System32/drivers/etc/hosts' }, capabilities: {}, contextRouting: { core: ['readme'] } }],
 ]
 
 const cases = [
@@ -219,6 +221,23 @@ const cases = [
       git(['add', '-A'], root)
       git(['commit', '-q', '-m', 'no dependency change'], root)
       return checkResult(root, 'no-new-deps', 'HEAD~1').ok === true
+    },
+  },
+  {
+    name: '回帰防止: optionalDependenciesへの新規追加もproduction dependencyとして扱う',
+    expect: () => {
+      // npmは`--omit=optional`を指定しない限りoptionalDependenciesを既定で
+      // インストールする。dependencies/devDependenciesしか見ていなければ、
+      // ここへ追加するだけでNONE/DEV_ONLY/ALLOWLIST/REVIEW_PRODUCTIONいずれの
+      // ポリシーもすり抜けられてしまう(既定のDEV_ONLYでも本来は禁止されるはず)。
+      const root = setupTempProject(join(FIXTURES, 'pass'))
+      writeFileSync(
+        join(root, 'package.json'),
+        JSON.stringify({ name: 'x', optionalDependencies: { 'left-pad': '1.0.0' } }, null, 2),
+      )
+      git(['add', '-A'], root)
+      git(['commit', '-q', '-m', 'add an optionalDependency'], root)
+      return checkResult(root, 'no-new-deps', 'HEAD~1').ok === false
     },
   },
   {

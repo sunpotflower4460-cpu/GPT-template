@@ -107,8 +107,12 @@ function depNamesByKind(pkgJsonText) {
   } catch {
     return PARSE_FAILED
   }
+  // npmはoptionalDependenciesを`npm install --omit=optional`を指定しない限り
+  // 既定でインストールする（project-kernel.jsonのruntime.setupは指定していない）。
+  // productionのdependenciesと同じ扱いにしないと、optionalDependenciesへ追加する
+  // だけでNONE/DEV_ONLY/ALLOWLIST/REVIEW_PRODUCTIONいずれのモードもすり抜けられる。
   return {
-    dependencies: new Set(Object.keys(pkg.dependencies ?? {})),
+    dependencies: new Set([...Object.keys(pkg.dependencies ?? {}), ...Object.keys(pkg.optionalDependencies ?? {})]),
     devDependencies: new Set(Object.keys(pkg.devDependencies ?? {})),
   }
 }
