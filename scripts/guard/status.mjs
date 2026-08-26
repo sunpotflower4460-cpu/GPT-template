@@ -73,6 +73,17 @@ function isValidKernelCapabilities(capabilities) {
   return Object.values(capabilities).every((value) => typeof value === 'boolean')
 }
 
+// modes自体は任意項目。TS側は `Array.isArray(value.modes)` が真の場合だけ
+// parseStringArray()で検証する — modesが配列でない場合は(defaultModeと同様)
+// 例外を投げずに単に無視するため、ここも配列でない値はスキップして通す。
+// 配列の場合だけ、全要素がtrim後non-emptyな文字列であることを要求する
+// （consumer側のparseStringArray(value.modes, 'modes')と同じ契約）。
+function isValidKernelModes(modes) {
+  if (modes === undefined) return true
+  if (!Array.isArray(modes)) return true
+  return modes.every((item) => isNonEmptyTrimmedString(item))
+}
+
 // contextRouting自体は任意項目（consumer側のTS schema-v1 parserも同様に省略可）。
 // 存在する場合だけ、各tier(core/scoped/onDemand)がpathsのキーを指す文字列配列に
 // なっていることを検証する。ここを飛ばすと、pathsに存在しないキーを参照する
@@ -142,9 +153,9 @@ function isValidKernelValidation(validation) {
 // いるのと同じ契約まで検証する — producer側(このファイル)がそれより緩いと、この
 // リポジトリのguardはグリーンのまま、consumer側だけがKERNEL_AWAREとして読めず
 // GENERIC_REPOへ黙って落ちる状態を作れてしまう（schemaVersionが1以外の任意の
-// 数値でも通る、kind/capabilities/runtime/validationを検証しない、pathsが
-// 空や先頭空白付きの危険パスでも通る、contextRoutingがpathsに存在しないキーを
-// 参照していても通る、など）。
+// 数値でも通る、kind/capabilities/modes/runtime/validationを検証しない、
+// pathsが空や先頭空白付きの危険パスでも通る、contextRoutingがpathsに存在
+// しないキーを参照していても通る、など）。
 // scripts/guard/checks/kernel-manifest-valid.mjs からも同じ判定を使うため export する
 // （CIの `npm run guard` と `status --json` とで判定基準がずれないようにする）。
 export function isValidKernelManifest(parsed) {
@@ -153,6 +164,7 @@ export function isValidKernelManifest(parsed) {
   if (parsed.kind !== 'ai-project-kernel') return false
   if (!isValidKernelPaths(parsed.paths)) return false
   if (!isValidKernelCapabilities(parsed.capabilities)) return false
+  if (!isValidKernelModes(parsed.modes)) return false
   if (!isValidKernelContextRouting(parsed.contextRouting, parsed.paths)) return false
   if (!isValidKernelRuntime(parsed.runtime)) return false
   if (!isValidKernelValidation(parsed.validation)) return false
