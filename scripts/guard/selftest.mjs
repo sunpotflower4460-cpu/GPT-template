@@ -476,6 +476,28 @@ const cases = [
     },
   },
   {
+    name: '回帰防止: base時点のguard.config.jsonが壊れていても、production→devDependenciesへの再分類のみ（新規パッケージ0件）のPRはブロックしない',
+    expect: () => {
+      // addedProd/addedDevは区間比較（dependencies⇄devDependencies間の移動も
+      // 「そのセクションへの追加」に見える）なので、この再分類だけでも
+      // addedDev.length > 0 になる。ここでtrulyNew（本当に初めて登場した
+      // 名前かどうか）ではなくaddedDevを早期returnの条件に使うと、
+      // 「新規パッケージは1件も無い」のにbase側guard.config.jsonの破損を
+      // 理由にpolicyの読み込みへ進んでしまい、無関係な理由でブロックされる
+      // （直前のテストが検証する「依存を追加しないPRはブロックしない」という
+      // 設計意図に反する）。
+      const root = setupTempProject(join(FIXTURES, 'pass'))
+      writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'x', dependencies: { 'left-pad': '1.0.0' } }, null, 2))
+      writeFileSync(join(root, 'guard.config.json'), '{ not valid json')
+      git(['add', '-A'], root)
+      git(['commit', '-q', '-m', 'left-pad as production dependency, with a broken guard.config.json'], root)
+      writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'x', devDependencies: { 'left-pad': '1.0.0' } }, null, 2))
+      git(['add', '-A'], root)
+      git(['commit', '-q', '-m', 'reclassify left-pad as a devDependency only'], root)
+      return checkResult(root, 'no-new-deps', 'HEAD~1').ok === true
+    },
+  },
+  {
     name: '回帰防止: dependencies⇄devDependencies間の再分類は新規依存として扱わない（NONE/ALLOWLIST）',
     expect: () => {
       // left-padをdependenciesからdevDependenciesへ移すだけ（パッケージ自体はbaseに既存）。
