@@ -238,14 +238,6 @@ export function run({ root, base }) {
   const addedProd = diffAdded(beforeOk.dependencies, after.dependencies)
   const addedDev = diffAdded(beforeOk.devDependencies, after.devDependencies)
 
-  // 新規に追加された依存が0件なら、ポリシーの読み込み・検証より前にここで
-  // 抜ける。base時点のguard.config.jsonが壊れていても、そのPRが依存を
-  // 追加していない（＝壊れた設定を直すだけのPRである場合を含む）なら
-  // ブロックしない。ポリシーの妥当性は「実際に検証が必要なとき」だけ問う。
-  if (addedProd.length === 0 && addedDev.length === 0) {
-    return { ok: true, messages: ['新規の依存パッケージはありません'] }
-  }
-
   // dependencies⇄devDependencies間の再分類（パッケージ名自体はbase時点で既に
   // 存在していた）は、addedProd/addedDevの単純な区間比較だけでは「新規追加」に
   // 見えてしまう。NONE（新規0件）とALLOWLIST（新規名だけを許可リストと照合）は
@@ -254,6 +246,23 @@ export function run({ root, base }) {
   const beforeUnion = new Set([...beforeOk.dependencies, ...beforeOk.devDependencies])
   const afterUnion = new Set([...after.dependencies, ...after.devDependencies])
   const trulyNew = [...afterUnion].filter((name) => !beforeUnion.has(name))
+
+  // ポリシーの読み込み・検証より前にここで抜けられるかどうかは、addedProd/
+  // addedDevの単純な区間比較ではなくtrulyNewを使って判定する必要がある。
+  // 例: dependenciesにあったパッケージをdevDependenciesへ再分類しただけ
+  // （パッケージ名自体はbaseに既存 = trulyNewは空）でも、addedDevの区間比較
+  // 単体では「新規追加」に見えてしまう。いずれのmodeもブロックし得るのは
+  // addedProd（DEV_ONLY/REVIEW_PRODUCTIONが見る。ただしREVIEW_PRODUCTIONは
+  // 常にok:trueを返すためブロックはしない）かtrulyNew（NONE/ALLOWLISTが見る）
+  // のどちらかが非空のときだけなので、両方が空なら結果は必ずok:trueになる。
+  // ここを誤ってaddedDevベースのままにすると、「本当は新規パッケージが
+  // 1つも無い」reclassificationだけのPRが、無関係なbase側guard.config.json
+  // の破損を理由にブロックされてしまう
+  // （base時点のdependencyPolicyが壊れていても依存を追加しないPRはブロック
+  // しない、という直後の設計意図に反する）。
+  if (addedProd.length === 0 && trulyNew.length === 0) {
+    return { ok: true, messages: ['新規の依存パッケージはありません'] }
+  }
 
   let basePolicyRaw
   try {
